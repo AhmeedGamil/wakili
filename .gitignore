@@ -1,0 +1,14 @@
+# Local secrets & config
+.env
+
+# Runtime state: sessions, uploads, generated token, settings, file registry
+/data/
+
+# Logs
+*.log
+
+# Dependencies
+node_modules/
+
+# Local editor/assistant config
+.claude/

@@ -1,0 +1,17 @@
+{
+  "name": "remote-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Phone gateway for Claude Code — chat with your local Claude Code sessions from your phone over LAN, Tailscale, or Cloudflare.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "tailscale": "node server.mjs --tunnel tailscale",
+    "cloudflare": "node cf.mjs",
+    "bridge": "node cf-bridge.mjs",
+    "lan": "node server.mjs --tunnel none"
+  }
+}
