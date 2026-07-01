@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Remote Agent</title>
+  <link rel="stylesheet" href="/app.css">
+  <!-- Cloudflare mode: swap EventSource for a WebSocket-backed shim BEFORE the app
+       boots, so the live stream isn't buffered by Cloudflare. This classic script
+       runs before the deferred module below. All existing app files are unchanged;
+       this page just loads them with the shim in front. -->
+  <script src="/cf-shim.js"></script>
+</head>
+<body data-theme="dark">
+  <div id="app"></div>
+  <script type="module" src="/js/main.js"></script>
+</body>
+</html>
