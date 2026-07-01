@@ -209,13 +209,13 @@ fs.writeFileSync(
 
 // Maps the bridge's thinking levels to Claude's keyword triggers (appended to
 // the prompt; Claude turns them into a thinking-token budget internally).
-const THINKING = { off: "", think: "think", think_hard: "think hard", ultrathink: "ultrathink" };
+export const THINKING = { off: "", think: "think", think_hard: "think hard", ultrathink: "ultrathink" };
 
 // The model chats over a phone, so any question it wants the user to answer must
 // go through the ask_options MCP tool (renders tappable buttons + pauses the turn
 // for the reply). Left to itself the model tends to ask in plain prose, which the
 // phone can't turn into an interactive card — so we instruct it explicitly.
-const ASK_DIRECTIVE =
+export const ASK_DIRECTIVE =
   "The user is on a phone. Whenever you need them to make a choice, a decision, a confirmation, " +
   "or to pick between options, you MUST call the ask_options tool (mcp__remoteagent__ask_options) " +
   "with your question(s) and their options — never ask by writing the question as plain text. That " +
