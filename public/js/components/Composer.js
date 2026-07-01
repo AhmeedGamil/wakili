@@ -1,0 +1,185 @@
+// Reusable composer: attach button, auto-growing textarea, send button.
+// Holds pending attachments (read to base64) until send. Enter sends,
+// Shift+Enter newline. Emits (text, attachments) via onSend.
+//
+// Slash commands: when the text is a single "/token" (no space yet), a menu of
+// the agent's real commands pops above the bar — like the Claude CLI. ↑/↓ move,
+// Enter/Tab or tap selects. Picking one drops "/name " into the box so you can add
+// args (or just press Enter) — the command is then sent to the agent like any turn.
+// The command list comes from the backend per agent; setCommands() swaps it.
+
+import { el } from "./dom.js";
+import { icon } from "./icons.js";
+
+export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal, commands = [] }) {
+  let pending = []; // [{ name, dataBase64 }]
+  let items = [];   // commands currently shown in the menu
+  let active = 0;   // highlighted index
+  let menuOpen = false;
+  let busy = false; // active session has an in-flight turn (send button becomes Stop)
+
+  const input = el("textarea", { id: "input", rows: "1", placeholder: "type / for command" });
+  const send = el("button", { class: "btn send", type: "submit", "aria-label": "Send" }, icon("arrow-up"));
+  const fileInput = el("input", { type: "file", multiple: "", style: "display:none" });
+  const attachBtn = el("button", { class: "btn attach", type: "button", title: "Attach files", "aria-label": "Attach" }, icon("plus"));
+  const chips = el("div", { class: "chips" });
+  const menu = el("div", { class: "slash-menu", hidden: "" });
+  const addMenu = el("div", { class: "add-menu", hidden: "" }); // + button: Add files / Terminal
+  const queued = el("div", { class: "queued", hidden: "" }); // pending message shown while busy
+
+  const bar = el("div", { class: "composer-bar" }, attachBtn, input, send);
+  const root = el("form", { id: "composer", class: "composer" }, menu, addMenu, queued, chips, bar, fileInput);
+
+  function autoSize() {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 180) + "px";
+    // Buttons sit centered on a single line, but drop to the bottom once the
+    // text grows past two lines (so they don't float in the middle of a tall box).
+    const cs = getComputedStyle(input);
+    let line = parseFloat(cs.lineHeight);
+    if (!line) line = parseFloat(cs.fontSize) * 1.4;
+    const padV = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+    const lines = Math.round((input.scrollHeight - padV) / line);
+    bar.classList.toggle("multiline", lines > 1);
+  }
+
+  // Is there something to send (typed text or a pending attachment)?
+  const hasContent = () => input.value.trim().length > 0 || pending.length > 0;
+  // The button is Stop (■) ONLY while the agent works AND the box is empty;
+  // the moment you type (or while idle) it becomes Send (↑) so you can send/queue.
+  function refreshButton() {
+    const stop = busy && !hasContent();
+    send.classList.toggle("stop", stop);
+    send.replaceChildren(icon(stop ? "square" : "arrow-up"));
+    send.setAttribute("aria-label", stop ? "Stop" : "Send");
+    send.disabled = false;
+  }
+  function renderChips() {
+    chips.innerHTML = "";
+    pending.forEach((a, i) => {
+      const remove = el("button", { class: "chip-x", type: "button", onClick: () => { pending.splice(i, 1); renderChips(); } }, "×");
+      chips.appendChild(el("div", { class: "chip" }, a.name, remove));
+    });
+    refreshButton(); // attachments count as content
+  }
+
+  // ---- slash menu ----
+  function closeMenu() { menuOpen = false; menu.setAttribute("hidden", ""); menu.innerHTML = ""; }
+  function renderMenu() {
+    menu.innerHTML = "";
+    items.forEach((c, i) => {
+      menu.appendChild(el("button",
+        { type: "button", class: "slash-item" + (i === active ? " active" : ""),
+          onMousedown: (e) => { e.preventDefault(); run(c); } },
+        el("span", { class: "slash-name", text: "/" + c.name }),
+        el("span", { class: "slash-desc", text: c.desc }),
+      ));
+    });
+  }
+  function move(dir) {
+    if (!items.length) return;
+    active = (active + dir + items.length) % items.length;
+    renderMenu();
+    menu.children[active]?.scrollIntoView({ block: "nearest" });
+  }
+  function run(c) {
+    if (!c) return;
+    closeMenu();
+    input.value = "/" + c.name + " ";   // fill it in; user adds args or hits Enter
+    autoSize();
+    input.focus();
+  }
+  function syncMenu() {
+    const m = /^\/(\S*)$/.exec(input.value);   // only a bare "/token", no args yet
+    if (!m || !commands.length) return closeMenu();
+    const q = m[1].toLowerCase();
+    items = commands.filter((c) => c.name.toLowerCase().startsWith(q) || c.desc.toLowerCase().includes(q));
+    if (!items.length) return closeMenu();
+    active = 0; menuOpen = true; menu.removeAttribute("hidden"); renderMenu();
+  }
+
+  function submit() {
+    const t = input.value.trim();
+    if (!t && !pending.length) return;
+    onSend(t, pending.slice());
+    pending = [];
+    renderChips();
+    input.value = "";
+    autoSize();
+    refreshButton(); // box is empty again → back to Stop if still busy
+    input.blur();    // drop the mobile keyboard once the message is on its way
+  }
+
+  // ---- + (add) menu: choose Add files or open the Terminal page ----
+  function closeAddMenu() { addMenu.setAttribute("hidden", ""); }
+  function openAddMenu() {
+    addMenu.innerHTML = "";
+    addMenu.append(
+      el("button", { type: "button", class: "add-item",
+        onMousedown: (e) => { e.preventDefault(); closeAddMenu(); fileInput.click(); } },
+        icon("paperclip"), el("span", { text: "Add files" })),
+      el("button", { type: "button", class: "add-item",
+        onMousedown: (e) => { e.preventDefault(); closeAddMenu(); onOpenTerminal && onOpenTerminal(); } },
+        icon("terminal"), el("span", { text: "Terminal" })),
+    );
+    addMenu.removeAttribute("hidden");
+  }
+  attachBtn.onclick = () => { if (addMenu.hasAttribute("hidden")) openAddMenu(); else closeAddMenu(); };
+  fileInput.onchange = () => {
+    for (const file of fileInput.files) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        pending.push({ name: file.name, dataBase64: String(reader.result).split(",")[1] });
+        renderChips();
+      };
+      reader.readAsDataURL(file);
+    }
+    fileInput.value = "";
+  };
+
+  // Keep focus on the textarea when the button is tapped — otherwise the first tap
+  // just blurs the input (dismissing the keyboard) and you'd need a second tap.
+  send.addEventListener("mousedown", (e) => e.preventDefault());
+  // Stop only when working with an empty box; otherwise it's a normal Send button
+  // and the form submit handles it (sending, or queueing if the agent is busy).
+  send.addEventListener("click", (e) => { if (busy && !hasContent()) { e.preventDefault(); onStop && onStop(); } });
+
+  root.addEventListener("submit", (e) => { e.preventDefault(); submit(); });
+  input.addEventListener("input", () => { autoSize(); syncMenu(); refreshButton(); closeAddMenu(); });
+  input.addEventListener("keydown", (e) => {
+    // Slash-command menu still uses the keys while it's open.
+    if (menuOpen) {
+      if (e.key === "ArrowDown") { e.preventDefault(); return move(1); }
+      if (e.key === "ArrowUp") { e.preventDefault(); return move(-1); }
+      if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); return run(items[active]); }
+      if (e.key === "Escape") { e.preventDefault(); return closeMenu(); }
+    }
+    // Otherwise Enter just inserts a newline (default) — only the Send button sends.
+  });
+  document.addEventListener("click", (e) => {
+    if (!root.contains(e.target)) { if (menuOpen) closeMenu(); closeAddMenu(); }
+  });
+
+  return {
+    el: root,
+    // Busy → Stop when the box is empty, Send when there's text to queue.
+    setBusy: (b) => { busy = !!b; refreshButton(); },
+    // Show/clear the "queued" chip for the active session's pending message.
+    setQueued: (q) => {
+      queued.innerHTML = "";
+      if (q && (q.text || (q.raw && q.raw.length))) {
+        const label = q.text || (q.raw || []).map((a) => a.name).join(", ");
+        queued.append(
+          icon("clock"),
+          el("span", { class: "queued-label", text: "Queued: " + label }),
+          el("button", { class: "queued-x", type: "button", title: "Cancel", onClick: () => onCancelQueued && onCancelQueued() }, icon("x")),
+        );
+        queued.removeAttribute("hidden");
+      } else {
+        queued.setAttribute("hidden", "");
+      }
+    },
+    focus: () => input.focus(),
+    setCommands: (list) => { commands = Array.isArray(list) ? list : []; if (menuOpen) syncMenu(); },
+  };
+}
