@@ -2,6 +2,7 @@
 // Adding Codex/Gemini later = one import + one register() call.
 
 import { claudeAgent } from "./claude.mjs";
+import { claudeSdkAgent } from "./claude-sdk.mjs";
 import { codexAgent } from "./codex.mjs";
 
 const agents = new Map();
@@ -23,4 +24,5 @@ export function listAgents() {
 }
 
 register(claudeAgent);
+register(claudeSdkAgent);
 register(codexAgent);
