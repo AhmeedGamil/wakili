@@ -30,7 +30,7 @@ export function createModelPicker({ onPickAgent, onPickModel, onControlChange, o
       pop.appendChild(dd.el);
     };
 
-    mk({ label: "Agent", options: agents.map((a) => ({ value: a.id, label: a.label })), value: agentId, onChange: (v) => onPickAgent(v) });
+    mk({ label: "Agent", options: agents.map((a) => ({ value: a.id, label: a.label, description: a.description })), value: agentId, onChange: (v) => onPickAgent(v) });
     mk({ label: "Model", options: modelOpts, value: controls.model, onChange: (v) => onPickModel(agentId, v) });
     for (const [key, c] of Object.entries(agent?.controls || {})) {
       if (key === "model") continue;

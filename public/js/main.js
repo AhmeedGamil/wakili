@@ -82,6 +82,7 @@ const dock = createDock({
   onPermission: (id, decision, tool) => controller.answerPermission(id, decision, tool),
   onAnswerQuestion: (id, answer) => controller.answerQuestion(id, answer),
   onArchive: (node) => messageList.addRecord(node),
+  onActiveChange: (active) => composer.setBlocked(active), // block sending while a card awaits an answer
 });
 const composer = createComposer({
   onSend: (t, attachments) => controller.send(t, attachments),

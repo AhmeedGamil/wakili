@@ -29,9 +29,13 @@ export function createDropdown({ label, options, value, onChange, onOpen }) {
 
   for (const o of options) {
     const active = o.value === value;
+    // With a description, show label over a muted sub-line; otherwise just the label.
+    const main = o.description
+      ? el("span", { class: "dd-opt-main" }, el("span", { class: "dd-opt-label", text: o.label }), el("span", { class: "dd-opt-desc", text: o.description }))
+      : el("span", { text: o.label });
     menu.appendChild(el("button",
       { class: "dd-opt" + (active ? " active" : ""), type: "button", onClick: (e) => { e.stopPropagation(); setOpen(false); onChange(o.value); } },
-      el("span", { text: o.label }),
+      main,
       active ? icon("check", "dd-check") : null,
     ));
   }

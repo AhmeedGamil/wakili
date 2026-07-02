@@ -225,6 +225,7 @@ export const ASK_DIRECTIVE =
 export const claudeAgent = {
   id: "claude",
   label: "Claude",
+  description: "Anthropic's Claude Code, run by spawning the CLI and streaming its output.",
 
   // Discovered fresh on each manifest request so newly added custom commands appear.
   commands: listCommands,

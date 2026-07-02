@@ -57,6 +57,7 @@ let sdkQuery = null; // cached SDK query() after first lazy import
 export const claudeSdkAgent = {
   id: "claude-sdk",
   label: "Claude (SDK)",
+  description: "Anthropic's Claude Code, run in-process via the official Agent SDK.",
 
   // Share the CLI adapter's slash commands and controls (same model list, effort,
   // thinking, permission modes) so the two agents present an identical panel.

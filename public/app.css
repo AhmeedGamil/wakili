@@ -235,9 +235,14 @@ body {
 .dd-head.open .dd-caret { transform: rotate(180deg); }
 .dd-menu { display: flex; flex-direction: column; gap: 2px; padding: 6px; margin-top: 4px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px; }
 .dd-menu[hidden] { display: none; }
-.dd-opt { display: flex; align-items: center; justify-content: space-between; gap: 8px; background: none; border: 0; color: var(--text); font: inherit; font-size: 14px; text-align: left; padding: 10px 11px; border-radius: 9px; cursor: pointer; }
+.dd-opt { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; background: none; border: 0; color: var(--text); font: inherit; font-size: 14px; text-align: left; padding: 10px 11px; border-radius: 9px; cursor: pointer; }
 .dd-opt:hover { background: var(--hover); }
 .dd-opt.active { background: var(--panel); }
+/* agent option: label over a muted description sub-line */
+.dd-opt-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.dd-opt-label { font-size: 14px; }
+.dd-opt-desc { font-size: 11.5px; color: var(--muted); line-height: 1.35; white-space: normal; }
+.dd-check { flex: none; margin-top: 2px; }
 .dd-check { color: var(--accent); }
 .picker-pop[hidden] { display: none; }
 /* Allow-always switch row */
@@ -296,12 +301,12 @@ body {
 .tool-card { margin-top: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
 .tool-head { display: flex; align-items: flex-start; gap: 8px; padding: 9px 12px; cursor: pointer; font-size: 13px; user-select: none; }
 .tool-head:hover { background: var(--hover); }
-/* collapsed: clamp the title to 2 rows so a long path never grows the card;
+/* collapsed: clamp the title to 1 row so a long path never grows the card;
    opening the card reveals it in full */
-.tool-title { flex: 1; min-width: 0; overflow-wrap: anywhere; font-weight: 600; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.tool-title { flex: 1; min-width: 0; overflow-wrap: anywhere; font-weight: 600; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; }
 .tool-card.open .tool-title { -webkit-line-clamp: unset; overflow: visible; }
-/* summary row under the card, aligned to the start; hidden when there's nothing */
-.tool-badge { padding: 7px 12px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; font-weight: 500; text-align: left; }
+/* summary caption BELOW the card (outside its border); hidden when there's nothing */
+.tool-badge { margin: 5px 0 0 4px; color: var(--muted); font-size: 12px; font-weight: 500; text-align: left; }
 .tool-badge:empty { display: none; }
 .tool-caret, .tool-ico { flex: none; margin-top: 1px; }
 .tool-caret { color: var(--muted); font-size: 11px; transition: transform .15s; }
@@ -331,15 +336,28 @@ body {
 .msg.ask { background: var(--panel); border: 1px solid var(--accent); border-radius: 16px; padding: 12px 14px; }
 .ask-tag { display: inline-block; font-size: 10.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; }
 .ask-q { font-weight: 600; margin-bottom: 10px; }
+/* question tabs: one per question, only the active one's options are shown */
+.ask-tabs { display: flex; gap: 4px; margin-bottom: 12px; overflow-x: auto; padding-bottom: 2px; }
+.ask-tab { flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel-2); color: var(--muted); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.ask-tab.on { color: var(--text); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.ask-tab.done::after { content: "✓"; color: var(--accent); font-size: 11px; font-weight: 700; }
+.ask-pane-content[hidden] { display: none; }
 .ask-opts { display: flex; flex-direction: column; gap: 8px; }
-.ask-opt { text-align: left; background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; font: inherit; cursor: pointer; transition: background .12s, border-color .12s; }
+.ask-opt { display: flex; align-items: center; gap: 10px; text-align: left; background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; font: inherit; cursor: pointer; transition: background .12s, border-color .12s; }
+.ask-opt-label { flex: 1; min-width: 0; }
 .ask-opt:hover { background: var(--hover); }
 .ask-opt.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .ask-opt:disabled { opacity: .55; cursor: default; }
+/* selection mark: a circle for single-select (radio), a square for multiSelect (checkbox) */
+.ask-mark { flex: none; width: 18px; height: 18px; border: 2px solid var(--border); position: relative; transition: border-color .12s, background .12s; }
+.ask-opts.single .ask-mark { border-radius: 50%; }
+.ask-opts.multi .ask-mark { border-radius: 5px; }
+.ask-opt.on .ask-mark { border-color: var(--accent); background: var(--accent); }
+.ask-opts.single .ask-opt.on .ask-mark::after { content: ""; position: absolute; inset: 3px; border-radius: 50%; background: var(--accent-ink, #fff); }
+.ask-opts.multi .ask-opt.on .ask-mark::after { content: ""; position: absolute; left: 5px; top: 1px; width: 5px; height: 9px; border: solid var(--accent-ink, #fff); border-width: 0 2px 2px 0; transform: rotate(45deg); }
 .ask-send { margin-top: 10px; }
 .ask-other-input { width: 100%; margin-top: 6px; font: inherit; background: var(--panel-2); color: var(--text); border: 1px solid var(--accent); border-radius: 10px; padding: 9px 11px; outline: none; box-sizing: border-box; }
 .ask-other-input[hidden] { display: none; }
-.ask-q + .ask-tag { margin-top: 14px; }
 /* once answered, fade the card's accent like a decided permission card */
 .msg.ask.decided { border-color: var(--border); }
 .msg.ask.decided .perm-head { color: var(--muted); }
@@ -436,7 +454,7 @@ body {
 .dock .card { display: flex; flex-direction: column; max-height: 60vh; background: var(--panel); border: 1px solid var(--accent); border-radius: 16px; padding: 12px 14px; box-shadow: 0 8px 30px rgba(0,0,0,.35); }
 /* head + actions stay pinned; only this region scrolls */
 .dock .perm-head { flex: none; }
-.dock .perm-scroll, .dock .ask-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin-bottom: 10px; }
+.dock .perm-scroll, .dock .ask-pane { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin-bottom: 10px; }
 .dock .perm-scroll .perm-body { max-height: none; overflow: visible; margin: 0; }
 .dock .perm-body.diff { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; }
 .dock .perm-actions { flex: none; justify-content: center; }
@@ -451,6 +469,9 @@ body {
 .composer-bar { display: flex; gap: 6px; align-items: center; background: var(--panel); border: 1px solid var(--border); border-radius: 26px; padding: 6px; box-shadow: 0 1px 2px rgba(0,0,0,.18); transition: border-color .12s; }
 .composer-bar.multiline { align-items: flex-end; } /* >2 lines: buttons hug the bottom */
 .composer-bar:focus-within { border-color: var(--accent); }
+/* while a permission / question card is up, the composer is disabled */
+.composer.blocked .composer-bar { opacity: .55; }
+.btn.send:disabled { opacity: .5; cursor: default; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 6px; }
 .chip { display: flex; align-items: center; gap: 6px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 4px 9px; font-size: 13px; }
 .chip-x { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 16px; line-height: 1; }

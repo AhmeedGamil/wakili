@@ -126,13 +126,14 @@ export function toolCard(name, input, { open = false, output = null, isError = f
   // badges are hidden via CSS. data-tool lets attachOutput fill an output-based
   // badge later (Read/Grep/Glob), whose result isn't known at render time.
   const badge = el("div", { class: "tool-badge", text: badgeText(name, input, output) });
-  const card = el("div", { class: "tool-card" + (open ? " open" : ""), "data-tool": name }, head, body, badge);
+  const card = el("div", { class: "tool-card" + (open ? " open" : ""), "data-tool": name }, head, body);
   head.addEventListener("click", () => {
     const hidden = body.hasAttribute("hidden");
     if (hidden) body.removeAttribute("hidden"); else body.setAttribute("hidden", "");
     card.classList.toggle("open", hidden);
   });
-  return card;
+  // The "what happened" summary sits BELOW the card, outside its border.
+  return el("div", { class: "tool-wrap" }, card, badge);
 }
 
 // Append a tool's output to an already-rendered card (the live path) and reveal
@@ -147,7 +148,8 @@ export function attachOutput(cardEl, output, isError) {
   cardEl.classList.add("open");
   // Fill the header badge from the output when it wasn't known from the input
   // (Read/Grep/Glob). Edit/Write already set theirs, so leave a filled badge be.
-  const badge = cardEl.querySelector(".tool-badge");
+  // The badge now lives outside the card (as a sibling in .tool-wrap).
+  const badge = cardEl.parentElement ? cardEl.parentElement.querySelector(".tool-badge") : null;
   if (badge && !badge.textContent) {
     const b = outputBadge(cardEl.getAttribute("data-tool"), output);
     if (b) badge.textContent = b;

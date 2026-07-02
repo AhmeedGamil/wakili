@@ -12,13 +12,20 @@ import { el } from "./dom.js";
 import { icon } from "./icons.js";
 import { isExpandable, diffBody, toolCard } from "./toolCard.js";
 
-export function createDock({ onPermission, onAnswerQuestion, onArchive }) {
+export function createDock({ onPermission, onAnswerQuestion, onArchive, onActiveChange }) {
   const root = el("div", { id: "dock", class: "dock", hidden: "" });
   const perms = [];     // pending permission requests, FIFO
   let permBlock = null; // the rendered permission area (front card + batch bar)
 
-  const sync = () => { if (!root.children.length) root.setAttribute("hidden", ""); };
-  const show = () => root.removeAttribute("hidden");
+  // Tell the composer whenever a card appears/disappears, so it can block sending
+  // while an answer is pending. Only fire on real transitions.
+  let wasActive = false;
+  function notifyActive() {
+    const active = root.children.length > 0;
+    if (active !== wasActive) { wasActive = active; onActiveChange && onActiveChange(active); }
+  }
+  const sync = () => { if (!root.children.length) root.setAttribute("hidden", ""); notifyActive(); };
+  const show = () => { root.removeAttribute("hidden"); notifyActive(); };
   const archive = (node) => onArchive && onArchive(node);
   function clear() { perms.length = 0; permBlock = null; root.innerHTML = ""; sync(); }
 
@@ -91,24 +98,48 @@ export function createDock({ onPermission, onAnswerQuestion, onArchive }) {
   // Every question also gets an "Other" choice that reveals a free-text box.
   function addQuestion(req) {
     const questions = req.questions || [];
+    const multi = questions.length > 1;
     const card = el("div", { class: "card ask" });
     card.appendChild(el("div", { class: "perm-head" }, icon("help"), el("span", { text: "The agent is asking…" })));
-    const scroll = el("div", { class: "ask-scroll" }); // only the questions scroll
-    card.appendChild(scroll);
+
     const norm = (o) => (typeof o === "string" ? { label: o } : (o || {}));
     const state = questions.map(() => ({ picks: new Set(), other: false, otherText: "" }));
+    const answered = (i) => state[i].picks.size > 0 || (state[i].other && state[i].otherText.trim());
+
+    // Tabs (one per question) + a pane that shows only the active question. A single
+    // question skips the tab bar. Each option renders as a radio (single-select) or a
+    // checkbox (multiSelect), driven by the question's own multiSelect flag.
+    const tabsBar = el("div", { class: "ask-tabs" });
+    const pane = el("div", { class: "ask-pane" });
+    const panes = [];   // content node per question
+    const tabs = [];    // tab button per question
+    let activeIdx = 0;
+
+    const sendBtn = el("button", { class: "btn allow ask-send", type: "button", onClick: () => submit() }, "Send answers");
+
+    function refresh() {
+      tabs.forEach((t, i) => { t.classList.toggle("on", i === activeIdx); t.classList.toggle("done", !!answered(i)); });
+      sendBtn.disabled = !state.every((_, i) => answered(i));
+    }
+    function showTab(i) {
+      activeIdx = i;
+      panes.forEach((p, j) => { p.hidden = j !== i; });
+      refresh();
+    }
 
     questions.forEach((q, i) => {
       const st = state[i];
-      if (q.header) scroll.appendChild(el("div", { class: "ask-tag", text: q.header }));
-      scroll.appendChild(el("div", { class: "ask-q", text: q.question || "" }));
-      const opts = el("div", { class: "ask-opts" });
+      const content = el("div", { class: "ask-pane-content", hidden: "" });
+      if (q.header && !multi) content.appendChild(el("div", { class: "ask-tag", text: q.header }));
+      content.appendChild(el("div", { class: "ask-q", text: q.question || "" }));
+      const opts = el("div", { class: "ask-opts " + (q.multiSelect ? "multi" : "single") });
       const otherInput = el("input", { class: "ask-other-input", type: "text", placeholder: "Type your answer…", hidden: "" });
       const optBtns = [];
+      const mark = () => el("span", { class: "ask-mark" }); // radio circle / checkbox square (via CSS)
 
       for (const raw of q.options || []) {
         const o = norm(raw);
-        const btn = el("button", { class: "ask-opt", type: "button", title: o.description || "" }, o.label);
+        const btn = el("button", { class: "ask-opt", type: "button", title: o.description || "" }, mark(), el("span", { class: "ask-opt-label", text: o.label }));
         btn.addEventListener("click", () => {
           if (q.multiSelect) {
             btn.classList.toggle("on");
@@ -118,15 +149,16 @@ export function createDock({ onPermission, onAnswerQuestion, onArchive }) {
             otherBtn.classList.remove("on"); st.other = false; otherInput.setAttribute("hidden", "");
             btn.classList.add("on");
             st.picks.clear(); st.picks.add(o.label);
-            if (questions.length === 1) submit(); // single single-select → submit at once
           }
+          refresh();
+          if (!multi && !q.multiSelect) submit(); // lone single-select → submit at once
         });
         optBtns.push(btn);
         opts.appendChild(btn);
       }
 
       // "Other" → reveal a free-text box for this question
-      const otherBtn = el("button", { class: "ask-opt ask-other", type: "button" }, icon("pencil"), el("span", { text: "Other" }));
+      const otherBtn = el("button", { class: "ask-opt ask-other", type: "button" }, mark(), icon("pencil"), el("span", { class: "ask-opt-label", text: "Other" }));
       otherBtn.addEventListener("click", () => {
         if (q.multiSelect) {
           otherBtn.classList.toggle("on");
@@ -138,17 +170,27 @@ export function createDock({ onPermission, onAnswerQuestion, onArchive }) {
           st.other = true;
         }
         if (st.other) { otherInput.removeAttribute("hidden"); otherInput.focus(); } else { otherInput.setAttribute("hidden", ""); }
+        refresh();
       });
-      otherInput.addEventListener("input", () => { st.otherText = otherInput.value; });
+      otherInput.addEventListener("input", () => { st.otherText = otherInput.value; refresh(); });
       opts.appendChild(otherBtn);
-      scroll.appendChild(opts);
-      scroll.appendChild(otherInput);
+      content.appendChild(opts);
+      content.appendChild(otherInput);
+      panes.push(content);
+      pane.appendChild(content);
+
+      if (multi) {
+        const tab = el("button", { class: "ask-tab", type: "button", text: q.header || `Q${i + 1}` });
+        tab.addEventListener("click", () => showTab(i));
+        tabs.push(tab);
+        tabsBar.appendChild(tab);
+      }
     });
 
-    const sendBtn = el("button", { class: "btn allow ask-send", type: "button", onClick: () => submit() }, "Send answers");
+    if (multi) card.appendChild(tabsBar);
+    card.appendChild(pane);
     card.appendChild(sendBtn);
 
-    const answered = (i) => state[i].picks.size > 0 || (state[i].other && state[i].otherText.trim());
     let done = false;
     function submit() {
       if (done) return;
@@ -166,6 +208,7 @@ export function createDock({ onPermission, onAnswerQuestion, onArchive }) {
       archive(rec);
     }
 
+    showTab(0);
     root.appendChild(card); show();
   }
 

@@ -18,6 +18,7 @@ export function listAgents() {
   return [...agents.values()].map((a) => ({
     id: a.id,
     label: a.label,
+    description: a.description || "",
     controls: a.controls,
     commands: typeof a.commands === "function" ? a.commands() : (a.commands || []),
   }));

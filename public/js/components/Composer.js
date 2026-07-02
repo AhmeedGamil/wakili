@@ -17,6 +17,7 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
   let active = 0;   // highlighted index
   let menuOpen = false;
   let busy = false; // active session has an in-flight turn (send button becomes Stop)
+  let blocked = false; // a permission / question card is up — sending is disabled until answered
 
   const input = el("textarea", { id: "input", rows: "1", placeholder: "type / for command" });
   const send = el("button", { class: "btn send", type: "submit", "aria-label": "Send" }, icon("arrow-up"));
@@ -48,11 +49,13 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
   // The button is Stop (■) ONLY while the agent works AND the box is empty;
   // the moment you type (or while idle) it becomes Send (↑) so you can send/queue.
   function refreshButton() {
-    const stop = busy && !hasContent();
+    // While a card is up, force plain Send appearance and disable it entirely.
+    const stop = !blocked && busy && !hasContent();
     send.classList.toggle("stop", stop);
     send.replaceChildren(icon(stop ? "square" : "arrow-up"));
     send.setAttribute("aria-label", stop ? "Stop" : "Send");
-    send.disabled = false;
+    send.disabled = blocked;
+    root.classList.toggle("blocked", blocked);
   }
   function renderChips() {
     chips.innerHTML = "";
@@ -99,6 +102,7 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
   }
 
   function submit() {
+    if (blocked) return; // answer the pending permission / question first
     const t = input.value.trim();
     if (!t && !pending.length) return;
     onSend(t, pending.slice());
@@ -142,7 +146,7 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
   send.addEventListener("mousedown", (e) => e.preventDefault());
   // Stop only when working with an empty box; otherwise it's a normal Send button
   // and the form submit handles it (sending, or queueing if the agent is busy).
-  send.addEventListener("click", (e) => { if (busy && !hasContent()) { e.preventDefault(); onStop && onStop(); } });
+  send.addEventListener("click", (e) => { if (blocked) { e.preventDefault(); return; } if (busy && !hasContent()) { e.preventDefault(); onStop && onStop(); } });
 
   root.addEventListener("submit", (e) => { e.preventDefault(); submit(); });
   input.addEventListener("input", () => { autoSize(); syncMenu(); refreshButton(); closeAddMenu(); });
@@ -164,6 +168,8 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
     el: root,
     // Busy → Stop when the box is empty, Send when there's text to queue.
     setBusy: (b) => { busy = !!b; refreshButton(); },
+    // Block sending while a permission / question card awaits an answer.
+    setBlocked: (b) => { blocked = !!b; refreshButton(); },
     // Show/clear the "queued" chip for the active session's pending message.
     setQueued: (q) => {
       queued.innerHTML = "";
