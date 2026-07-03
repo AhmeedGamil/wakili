@@ -238,7 +238,7 @@ export function createChatController({ api, store, emitter }) {
       // A 404 means the session is gone (deleted on another device) — don't retry.
       if (err && String(err).includes("404")) { sessionCache.delete(id); refreshSessions(); return; }
       if (cached) return; // the cached view stays up; the stream reconnects on its own
-      if (attempt === 0) emitter.emit("toast", "Can't reach the laptop — retrying…");
+      if (attempt === 0) emitter.emit("toast", "Can't connect — retrying…");
       setTimeout(() => { if (seq === openSeq) openSession(id, attempt + 1); }, 2500);
       return;
     }
@@ -306,7 +306,7 @@ export function createChatController({ api, store, emitter }) {
     for (const a of entry.raw) {
       let up = null;
       try { up = await api.upload(a.name, a.dataBase64, id); } catch { up = null; }
-      if (!up || !up.path) return failOutbox(entry, `Upload failed: ${a.name}`);
+      if (!up || !up.path) return failOutbox(entry, `Couldn't upload ${a.name} — tap Retry`);
       attachments.push({ name: up.name, path: up.path, url: up.url || "" });
     }
     if (attachments.length && store.get().activeId === id) store.set((s) => ({ files: { ...s.files, uploaded: [...s.files.uploaded, ...attachments] } }));
@@ -315,11 +315,11 @@ export function createChatController({ api, store, emitter }) {
     try { r = await api.send(id, entry.text, entry.controls, attachments, entry.agentId); }
     catch {
       setBusy(id, false);
-      return failOutbox(entry, "Couldn't send — check the connection");
+      return failOutbox(entry, "Couldn't send — check your connection, then tap Retry");
     }
     // Raced another turn (it started between our check and the send): the session
     // IS busy, so keep the entry failed for a manual retry once it finishes.
-    if (r && r.error === "busy") return failOutbox(entry, "The agent was mid-turn — retry when it finishes");
+    if (r && r.error === "busy") return failOutbox(entry, "The agent is mid-turn — tap Retry when it finishes");
     removeOutbox(entry);
     if (entry.handle) entry.handle.update("sent");
   }
@@ -468,6 +468,13 @@ export function createChatController({ api, store, emitter }) {
     // Light poll as a safety net (authoritative busy/pending counts, titles);
     // the live stream handles moment-to-moment updates.
     setInterval(() => { refreshSessions().catch(() => {}); }, 5000);
+    // Version-skew guard: if the API answers but the live stream never connected,
+    // the running gateway predates /api/stream — replies would silently never
+    // render. Say so instead of looking broken.
+    setTimeout(() => {
+      if (streamReady) return;
+      api.agents().then(() => emitter.emit("toast", "Live updates aren't connecting — restart the gateway server to finish updating")).catch(() => {});
+    }, 6000);
   }
 
   return { init, openSession, newSession, deleteSession, send, execTerm, stopActive, cancelQueued, setControl, setAutoAllow, setAgent, pickModel, answerPermission, answerQuestion, browseFolders, createFolder, setCwd, lockScreen, screenOff, setKeepAwake, getOutbox, retryOutbox, discardOutbox };

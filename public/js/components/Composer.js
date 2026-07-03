@@ -29,8 +29,10 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
   const addMenu = el("div", { class: "add-menu", hidden: "" }); // + button: Add files / Terminal
   const queued = el("div", { class: "queued", hidden: "" }); // pending message shown while busy
 
-  const bar = el("div", { class: "composer-bar" }, attachBtn, input, send);
-  const root = el("form", { id: "composer", class: "composer" }, menu, addMenu, queued, chips, bar, fileInput, imgInput);
+  // The add-menu lives inside the bar so it can float anchored above the + button
+  // (absolutely positioned — it takes no layout space and covers nothing else).
+  const bar = el("div", { class: "composer-bar" }, addMenu, attachBtn, input, send);
+  const root = el("form", { id: "composer", class: "composer" }, menu, queued, chips, bar, fileInput, imgInput);
 
   function autoSize() {
     input.style.height = "auto";
@@ -177,7 +179,9 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
     // Otherwise Enter just inserts a newline (default) — only the Send button sends.
   });
   document.addEventListener("click", (e) => {
-    if (!root.contains(e.target)) { if (menuOpen) closeMenu(); closeAddMenu(); }
+    if (!root.contains(e.target) && menuOpen) closeMenu();
+    // The + menu dismisses on ANY tap outside itself (the + button toggles it).
+    if (!addMenu.contains(e.target) && !attachBtn.contains(e.target)) closeAddMenu();
   });
 
   return {

@@ -53,7 +53,7 @@ function interactiveHint(command) {
     return '"claude" needs a real terminal here. Run it one-shot instead:\n  claude -p "your prompt"';
   }
   if (TUI_PROGRAMS.has(prog)) {
-    return `"${prog}" is an interactive program and can't run in this terminal (no TTY). Use it from a real terminal on the laptop.`;
+    return `"${prog}" is an interactive program and can't run in this terminal (no TTY). Use it from a real terminal on your computer.`;
   }
   if (REPL_PROGRAMS.has(prog)) {
     if (piped || hasPositional) return null;     // running a script, or piped input

@@ -211,7 +211,7 @@ function showGate() {
   document.body.appendChild(el("div", { class: "lg-overlay" },
     el("div", { class: "lg-form" },
       el("div", { class: "lg-title", text: "Remote Agent" }),
-      el("div", { class: "lg-sub", text: "Open this page from the link or QR code in your laptop's terminal — it carries your access token." }),
+      el("div", { class: "lg-sub", text: "Open this page from the link or QR code shown in your computer's terminal — it carries your access token." }),
     )));
 }
 

@@ -430,7 +430,9 @@ body {
 .slash-desc { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* + (add) menu above the composer: Add files / Terminal */
-.add-menu { display: flex; flex-direction: column; gap: 2px; width: max-content; min-width: 190px; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 6px; margin-bottom: 8px; box-shadow: 0 16px 44px rgba(0,0,0,.45); }
+/* Floating popover anchored above the + button: just the list with a shadow —
+   no layout space taken, no backdrop; any tap outside dismisses it. */
+.add-menu { position: absolute; left: 0; bottom: calc(100% + 10px); z-index: 30; display: flex; flex-direction: column; gap: 2px; width: max-content; min-width: 190px; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 6px; box-shadow: 0 16px 44px rgba(0,0,0,.45); }
 .add-menu[hidden] { display: none; }
 .add-item { display: flex; align-items: center; gap: 10px; background: none; border: 0; color: var(--text); font: inherit; text-align: left; padding: 10px 12px; border-radius: 10px; cursor: pointer; }
 .add-item:hover { background: var(--hover); }
@@ -475,7 +477,7 @@ body {
 .perm-batch .btn { padding: 6px 12px; }
 
 .composer { display: flex; flex-direction: column; gap: 8px; padding: 10px 16px max(16px, env(safe-area-inset-bottom)); max-width: var(--maxw); margin: 0 auto; width: 100%; }
-.composer-bar { display: flex; gap: 6px; align-items: center; background: var(--panel); border: 1px solid var(--border); border-radius: 26px; padding: 6px; box-shadow: 0 1px 2px rgba(0,0,0,.18); transition: border-color .12s; }
+.composer-bar { position: relative; display: flex; gap: 6px; align-items: center; background: var(--panel); border: 1px solid var(--border); border-radius: 26px; padding: 6px; box-shadow: 0 1px 2px rgba(0,0,0,.18); transition: border-color .12s; }
 .composer-bar.multiline { align-items: flex-end; } /* >2 lines: buttons hug the bottom */
 .composer-bar:focus-within { border-color: var(--accent); }
 /* while a permission / question card is up, the composer is disabled */
