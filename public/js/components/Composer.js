@@ -203,5 +203,15 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
     },
     focus: () => input.focus(),
     setCommands: (list) => { commands = Array.isArray(list) ? list : []; if (menuOpen) syncMenu(); },
+    // Per-session state: the draft text and pending attachments are saved on
+    // session switch and restored when you come back — nothing leaks across chats.
+    getState: () => ({ draft: input.value, pending: pending.slice() }),
+    setState: (st) => {
+      pending = (st && st.pending) ? st.pending.slice() : [];
+      input.value = (st && st.draft) || "";
+      closeMenu(); closeAddMenu();
+      renderChips(); // also refreshes the send button
+      autoSize();
+    },
   };
 }

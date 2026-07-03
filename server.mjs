@@ -18,7 +18,7 @@ import { qrTerminal } from "./src/qr.mjs";
 import { getAgent, listAgents } from "./src/agents/registry.mjs";
 import { commandsReady, modelsReady } from "./src/agents/claude.mjs";
 import { sessionStore } from "./src/sessions/store.mjs";
-import { subscribe, publish } from "./src/sse.mjs";
+import { subscribe, subscribeAll, publish } from "./src/sse.mjs";
 import { createPermission, waitPermission, resolvePermission } from "./src/permissions.mjs";
 import { lockScreen, screenOff, setKeepAwake, powerStatus, shutdownPower } from "./src/power.mjs";
 
@@ -83,7 +83,9 @@ function capBytes(str, max) {
 // Where the agent runs when a session has no folder of its own (used so the
 // folder button can always show a real name instead of "Default folder").
 const GATEWAY_CWD = process.cwd();
-const withMeta = (s) => ({ ...s, busy: busy.has(s.id), effectiveCwd: s.cwd || GATEWAY_CWD });
+// `pending` = open permission/question cards awaiting the user, so the sidebar
+// can flag background sessions that need attention.
+const withMeta = (s) => ({ ...s, busy: busy.has(s.id), pending: pendingCards.get(s.id)?.size || 0, effectiveCwd: s.cwd || GATEWAY_CWD });
 
 // The URLs this same gateway is reachable on, surfaced to the page so it can
 // offer an in-page connection switcher. LAN + Tailscale are discovered at
@@ -538,6 +540,42 @@ const server = http.createServer(async (req, res) => {
         });
         return res.end(data);
       } catch { return notFound(res); }
+    }
+
+    // Multiplexed live stream: ONE connection carrying every session's events,
+    // each tagged with its sessionId. The client routes them (active session
+    // renders live; background sessions update badges/caches). Session-specific
+    // state (in-progress turn, pending cards) is delivered via /resync below.
+    if (p === "/api/stream" && m === "GET") {
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
+      });
+      res.flushHeaders?.();
+      res.write(":" + " ".repeat(2048) + "\n\n");
+      res.write(`data: ${JSON.stringify({ type: "_gateway", subtype: "connected" })}\n\n`);
+      const unsub = subscribeAll(res);
+      const ping = setInterval(() => res.write(": ping\n\n"), 15000);
+      req.on("close", () => { clearInterval(ping); unsub(); });
+      return;
+    }
+
+    // Publish a session's live state (in-progress turn parts + pending cards)
+    // INTO the multiplexed stream, so it arrives in order with subsequent live
+    // events — the client ignores that session's content events until this
+    // snapshot lands, then processes only what follows it (no gaps, no dupes).
+    // `client` tags the snapshot so other tabs can ignore someone else's resync.
+    if ((mm = p.match(/^\/api\/sessions\/([\w-]+)\/resync$/)) && m === "POST") {
+      const id = mm[1];
+      const b = await readBody(req);
+      publish(id, {
+        type: "_gateway", subtype: "snapshot", client: (b && b.client) || "",
+        parts: activeTurns.get(id) || [], busy: busy.has(id),
+        pending: [...(pendingCards.get(id)?.values() || [])],
+      });
+      return json(res, 200, { ok: true });
     }
 
     if ((mm = p.match(/^\/api\/sessions\/([\w-]+)\/stream$/)) && m === "GET") {

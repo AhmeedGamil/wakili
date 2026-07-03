@@ -74,5 +74,9 @@ export const api = {
   // AskUserQuestion answer: same endpoint, carries the chosen answer text.
   answerQuestion: (id, requestId, answer) =>
     call("POST", `/api/sessions/${id}/permission`, { id: requestId, answer }),
-  stream: (id) => new EventSource(withT(`/api/sessions/${id}/stream`)),
+  // ONE multiplexed stream for all sessions (events tagged with sessionId).
+  stream: () => new EventSource(withT("/api/stream")),
+  // Ask the server to publish a session's live state (turn parts + pending
+  // cards) into the stream; `client` lets other tabs ignore our snapshot.
+  resync: (id, client) => call("POST", `/api/sessions/${id}/resync`, { client }),
 };

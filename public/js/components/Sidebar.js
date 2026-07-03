@@ -14,7 +14,7 @@ const VIEW_KEY = "ra-session-view"; // "project" | "all"
 
 export function createSidebar({ onNew, onNewInFolder, onSelect, onDelete, onOpenFiles, onConnections, onDeviceMenu, onAppearance }) {
   let view = localStorage.getItem(VIEW_KEY) === "all" ? "all" : "project";
-  let last = { sessions: [], activeId: null, busyIds: {} }; // cached for re-render on toggle
+  let last = { sessions: [], activeId: null, busyIds: {}, unreadIds: {} }; // cached for re-render on toggle
 
   const filesBtn = el("button", { class: "side-files-btn", type: "button", onClick: onOpenFiles },
     el("span", { class: "sf-left" }, icon("file-text"), el("span", { text: "Files" })),
@@ -54,30 +54,35 @@ export function createSidebar({ onNew, onNewInFolder, onSelect, onDelete, onOpen
     allTab.classList.toggle("on", view === "all");
   }
 
-  function render({ sessions, activeId, busyIds = {}, files = [] }) {
-    last = { sessions: sessions || [], activeId, busyIds };
+  function render({ sessions, activeId, busyIds = {}, files = [], unreadIds = {} }) {
+    last = { sessions: sessions || [], activeId, busyIds, unreadIds };
     filesBtn.querySelector(".side-files-count").textContent = String(files.length);
     renderToggle();
     renderSessions();
   }
 
-  function sessionRow(s, activeId, busyIds, badge) {
-    const busy = (busyIds[s.id] || s.busy) ? el("span", { class: "s-busy", title: "Working…" }) : el("span");
+  function sessionRow(s, activeId, busyIds, unreadIds, badge) {
+    // Status, most-urgent first: waiting for your answer (permission/question),
+    // then working, then "finished while you were away", else nothing.
+    let flag = el("span");
+    if (s.pending > 0) flag = el("span", { class: "s-pending", title: "Waiting for your answer" }, icon("lock"));
+    else if (busyIds[s.id] || s.busy) flag = el("span", { class: "s-busy", title: "Working…" });
+    else if (unreadIds[s.id]) flag = el("span", { class: "s-unread", title: "New reply" });
     const title = el("span", { class: "s-title", text: s.title || "New chat" });
     const main = badge
       ? el("div", { class: "s-main" }, title, el("span", { class: "s-badge", text: badge }))
       : title;
     return el("div",
       { class: "session" + (s.id === activeId ? " active" : ""), onClick: () => onSelect(s.id) },
-      main, busy);
+      main, flag);
   }
 
   function renderSessions() {
-    const { sessions, activeId, busyIds } = last;
+    const { sessions, activeId, busyIds, unreadIds } = last;
     list.innerHTML = "";
     if (view === "all") {
       // Flat, newest-first (server order), each row tagged with its folder.
-      for (const s of sessions) list.appendChild(sessionRow(s, activeId, busyIds, s.cwd ? baseName(s.cwd) : "Default project"));
+      for (const s of sessions) list.appendChild(sessionRow(s, activeId, busyIds, unreadIds, s.cwd ? baseName(s.cwd) : "Default project"));
       return;
     }
     // By project: group by folder, each group with a + to start a chat there.
@@ -91,7 +96,7 @@ export function createSidebar({ onNew, onNewInFolder, onSelect, onDelete, onOpen
       const add = el("button", { class: "group-add", title: "New chat in this project", onClick: (e) => { e.stopPropagation(); onNewInFolder(group.cwd); } }, icon("plus"));
       list.appendChild(el("div", { class: "group-head", title: group.cwd || "the gateway's own folder" },
         el("span", { class: "group-label", text: label }), add));
-      for (const s of group.items) list.appendChild(sessionRow(s, activeId, busyIds));
+      for (const s of group.items) list.appendChild(sessionRow(s, activeId, busyIds, unreadIds));
     }
   }
 

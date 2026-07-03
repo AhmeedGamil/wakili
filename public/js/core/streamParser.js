@@ -7,8 +7,9 @@ export function parseClaudeEvent(ev) {
     if (ev.subtype === "connected") return { kind: "connected" };
     if (ev.subtype === "turn_start") return { kind: "turnStart" };
     if (ev.subtype === "turn_end") return { kind: "turnEnd", title: ev.title };
-    // Replay of an in-progress turn, sent when (re)subscribing to a working session.
-    if (ev.subtype === "snapshot") return { kind: "snapshot", parts: ev.parts || [], busy: !!ev.busy };
+    // A session's live state (in-progress turn parts + pending cards), published
+    // into the stream on resync. `client` identifies who asked for it.
+    if (ev.subtype === "snapshot") return { kind: "snapshot", parts: ev.parts || [], busy: !!ev.busy, pending: ev.pending || [], client: ev.client || "" };
     if (ev.subtype === "stopped") return { kind: "stopped" };
     if (ev.subtype === "permission_request") return { kind: "permission", id: ev.id, tool: ev.tool, input: ev.input };
     if (ev.subtype === "question_request") return { kind: "question", id: ev.id, questions: ev.input?.questions || [] };

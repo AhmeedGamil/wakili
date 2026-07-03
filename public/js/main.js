@@ -23,7 +23,7 @@ import { createComposer } from "./components/Composer.js";
 const THEME_KEY = "ra-theme";
 const ACCENT_KEY = "ra-accent";
 
-const store = createStore({ sessions: [], activeId: null, activeSession: null, agents: [], agentId: "claude", controls: {}, busyIds: {}, queued: {}, autoAllow: !!localStorage.getItem("ra-auto-allow"), files: { received: [], uploaded: [] }, allFiles: [], power: { platform: "", keepAwake: false } });
+const store = createStore({ sessions: [], activeId: null, activeSession: null, agents: [], agentId: "claude", controls: {}, busyIds: {}, queued: {}, unreadIds: {}, autoAllow: !!localStorage.getItem("ra-auto-allow"), files: { received: [], uploaded: [] }, allFiles: [], power: { platform: "", keepAwake: false } });
 const emitter = createEmitter();
 const controller = createChatController({ api, store, emitter });
 
@@ -122,9 +122,36 @@ function applyAccent(hex) {
   }
 }
 
+// ---- per-session UI state (drafts, attachments, scroll) ----
+// Saved when you switch away, restored when you come back — each chat keeps its
+// own half-typed message, pending attachments, and reading position.
+const uiState = new Map(); // sessionId -> { draft, pending, scrollTop }
+let uiSid = null;
+
+// Render an outbox entry (an in-flight/failed send) and hand its UI handle back
+// to the controller so upload/send progress can update it.
+function renderOutboxEntry(entry) {
+  entry.handle = messageList.addOutbox({
+    text: entry.text,
+    attachments: (entry.raw || []).map((a) => ({ name: a.name, url: a.isImg ? a.dataUrl : "", image: !!a.isImg })),
+    status: entry.status,
+    onRetry: () => controller.retryOutbox(entry),
+    onDiscard: () => controller.discardOutbox(entry),
+  });
+}
+
 // ---- streaming events -> components ----
 emitter.on("userMessage", (t) => messageList.userMessage(t));
-emitter.on("historyLoaded", (msgs) => { dock.clear(); messageList.renderHistory(msgs); });
+emitter.on("outbox", (entry) => renderOutboxEntry(entry));
+emitter.on("historyLoaded", (msgs) => {
+  dock.clear();
+  messageList.renderHistory(msgs);
+  // In-flight/failed sends for this session render after its history.
+  for (const entry of controller.getOutbox(store.get().activeId)) renderOutboxEntry(entry);
+  // Restore where you were scrolled to (falls back to the bottom).
+  const st = uiState.get(store.get().activeId);
+  if (st && st.scrollTop != null) messageList.el.scrollTop = st.scrollTop;
+});
 emitter.on("turnStart", () => messageList.startAssistant());
 emitter.on("snapshot", (s) => messageList.renderSnapshot(s.parts, s.busy));
 emitter.on("stopped", (info) => messageList.addStopped(info && info.interrupted));
@@ -153,7 +180,15 @@ emitter.on("toast", (text) => {
 // ---- state -> components ----
 let lastPick = "";
 store.subscribe((s) => {
-  sidebar.render({ sessions: s.sessions, activeId: s.activeId, busyIds: s.busyIds, files: s.allFiles, power: s.power });
+  // Session switch: bank the outgoing session's composer state + scroll position
+  // (this fires before the new session's history renders), then restore the
+  // incoming session's draft and attachments.
+  if (s.activeId !== uiSid) {
+    if (uiSid) uiState.set(uiSid, { ...composer.getState(), scrollTop: messageList.el.scrollTop });
+    uiSid = s.activeId;
+    composer.setState(uiState.get(uiSid));
+  }
+  sidebar.render({ sessions: s.sessions, activeId: s.activeId, busyIds: s.busyIds, files: s.allFiles, unreadIds: s.unreadIds, power: s.power });
   filesPage.render(s.allFiles);
   composer.setBusy(!!s.busyIds[s.activeId]);   // only the active session's busy gates the composer
   composer.setQueued(s.queued[s.activeId]);    // its pending (queued) message, if any

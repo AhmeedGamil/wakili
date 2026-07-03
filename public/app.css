@@ -515,7 +515,20 @@ body {
 
 /* sidebar "working" dot */
 .s-busy { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; animation: pulse 1.2s ease-in-out infinite; }
+/* a background session waiting on YOU (permission/question card pending) */
+.s-pending { flex: none; display: flex; color: var(--accent); }
+.s-pending svg { width: 14px; height: 14px; }
+/* a background session whose turn finished while you were elsewhere */
+.s-unread { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex: none; }
 @keyframes pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+
+/* ---- outbox status (an in-flight or failed send) ---- */
+.msg.user.outbox { display: flex; margin-top: -12px; } /* hugs the message it belongs to */
+.ob-row { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
+.msg.user.outbox.failed .ob-label { color: #e5484d; font-weight: 600; }
+.ob-btn { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 3px 10px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.ob-btn:hover { background: var(--hover); }
+.ob-btn[hidden] { display: none; }
 
 /* ---- toast (transient notice, e.g. connection trouble) ---- */
 .toast { position: fixed; left: 50%; bottom: 92px; transform: translateX(-50%); z-index: 60; max-width: 86vw; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 12px; padding: 9px 14px; font-size: 13px; text-align: center; box-shadow: 0 8px 30px rgba(0,0,0,.35); }

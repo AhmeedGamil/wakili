@@ -89,6 +89,32 @@ export function createMessageList() {
     root.appendChild(el("div", { class: "msg assistant" }, writeText(el("div", { class: "text" }), text)));
     scroll();
   }
+  // An in-flight (or failed) send from the outbox: the message visuals plus a
+  // status row — "Sending…" while in flight, Retry/Discard once failed, removed
+  // when the server accepts it. Returns a handle the controller drives.
+  function addOutbox({ text, attachments, status, onRetry, onDiscard }) {
+    const nodes = [];
+    const add = (n) => { nodes.push(n); root.appendChild(n); };
+    for (const a of attachments || []) add(attachmentCard(a));
+    if (text) add(el("div", { class: "msg user" }, writeText(el("div", { class: "bubble" }), text)));
+    const label = el("span", { class: "ob-label" });
+    const retryBtn = el("button", { class: "ob-btn", type: "button", onClick: () => onRetry && onRetry() }, "Retry");
+    const discardBtn = el("button", { class: "ob-btn", type: "button", onClick: () => onDiscard && onDiscard() }, "Discard");
+    add(el("div", { class: "msg user outbox" }, el("div", { class: "ob-row" }, label, retryBtn, discardBtn)));
+    const row = nodes[nodes.length - 1];
+    const update = (st) => {
+      if (st === "sent") { row.remove(); return; }
+      const failed = st === "failed";
+      label.textContent = failed ? "Not sent" : "Sending…";
+      row.classList.toggle("failed", failed);
+      retryBtn.hidden = discardBtn.hidden = !failed;
+    };
+    update(status || "sending");
+    stick = true;
+    scroll();
+    return { update, remove: () => nodes.forEach((n) => n.remove()) };
+  }
+
   // static renderers for stored history parts
   function staticTool(name, input, output, isError) {
     const node = el("div", { class: "msg assistant" }, renderTool(name, input, { output, isError }));
@@ -257,5 +283,5 @@ export function createMessageList() {
     scroll();
   }
 
-  return { el: root, userMessage, renderHistory, renderSnapshot, startAssistant, feedText, feedThink, addTool, addToolResult, addRecord, endTurn, addStopped, addFile, addExec, setMarkdown };
+  return { el: root, userMessage, addOutbox, renderHistory, renderSnapshot, startAssistant, feedText, feedThink, addTool, addToolResult, addRecord, endTurn, addStopped, addFile, addExec, setMarkdown };
 }
