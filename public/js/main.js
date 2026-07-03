@@ -135,9 +135,20 @@ emitter.on("toolResult", (r) => messageList.addToolResult(r));
 emitter.on("exec", (e) => messageList.addExec(e));
 emitter.on("permission", (req) => dock.addPermission(req));
 emitter.on("question", (q) => dock.addQuestion(q));
+emitter.on("requestResolved", (r) => dock.remove(r.id)); // answered elsewhere / timed out
 emitter.on("file", (f) => messageList.addFile(f));
 emitter.on("turnEnd", () => messageList.endTurn());
 emitter.on("focusInput", () => composer.focus());
+
+// Transient notice (connection trouble etc.) — one reusable element, auto-hides.
+let toastEl = null, toastTimer = 0;
+emitter.on("toast", (text) => {
+  if (!toastEl) { toastEl = el("div", { class: "toast", hidden: "" }); document.body.appendChild(toastEl); }
+  toastEl.textContent = text;
+  toastEl.removeAttribute("hidden");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.setAttribute("hidden", ""), 4000);
+});
 
 // ---- state -> components ----
 let lastPick = "";

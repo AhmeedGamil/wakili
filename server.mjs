@@ -42,6 +42,23 @@ function killTree(child) {
 const files = new Map(); // token -> { path, name } for downloadable files
 const activeTurns = new Map(); // sessionId -> parts[] being assembled this turn
 
+// Open permission/question cards awaiting an answer, kept per session so a
+// stream that (re)opens — switching back to the chat, or a network reconnect —
+// can replay them. Without this the card is published once and lost if nobody
+// is listening at that moment, leaving the turn stalled until the timeout.
+const pendingCards = new Map(); // sessionId -> Map<permId, gateway event>
+function trackCard(sessionId, id, event) {
+  if (!pendingCards.has(sessionId)) pendingCards.set(sessionId, new Map());
+  pendingCards.get(sessionId).set(id, event);
+}
+function untrackCard(sessionId, id) {
+  const m = pendingCards.get(sessionId);
+  if (m) { m.delete(id); if (!m.size) pendingCards.delete(sessionId); }
+  // Removes the card from any client still showing it (another tab, or a card
+  // whose wait timed out). The answering client already dropped its own card.
+  publish(sessionId, { type: "_gateway", subtype: "request_resolved", id });
+}
+
 // Tool output (Bash stdout, Read contents, …) is captured per turn so the UI can
 // show what a command printed — not just the command. Capped so a runaway
 // command can't bloat the session JSON on disk or freeze the phone's DOM.
@@ -142,8 +159,14 @@ async function runTurn(session, text, controls, attachments, agentId) {
   const agent = getAgent(session.agentId) || getAgent("claude");
   busy.add(session.id);
 
-  session.messages.push({ role: "user", text });
-  if (session.title === "New chat" && text) session.title = text.slice(0, 48);
+  // Attachments are persisted with the message (name + display URL) so the chat
+  // still shows them after switching sessions or reloading — not just live.
+  const userMsg = { role: "user", text };
+  if (attachments && attachments.length) {
+    userMsg.attachments = attachments.map((a) => ({ name: a.name, url: a.url || "", image: IMG_RE.test(a.name || "") }));
+  }
+  session.messages.push(userMsg);
+  if (session.title === "New chat" && (text || attachments?.length)) session.title = (text || attachments[0].name).slice(0, 48);
   if (controls) session.controls = controls;
   await sessionStore.save(session);
 
@@ -153,9 +176,10 @@ async function runTurn(session, text, controls, attachments, agentId) {
   let prompt = text;
   if (attachments && attachments.length) {
     const lines = attachments.map((a) => `- ${a.path}`).join("\n");
-    prompt = `${text}\n\n[The user attached these files; use the Read tool to view them if relevant:\n${lines}]`;
-    // register them for the sidebar "Attached by you" list (across all chats)
-    for (const a of attachments) recordFile({ sessionId: session.id, source: "user", filePath: a.path, name: a.name });
+    prompt = `${text ? text + "\n\n" : ""}[The user attached these files; use the Read tool to view them if relevant:\n${lines}]`;
+    // Register for the sidebar "Attached by you" list. Uploads that came through
+    // /api/upload already carry a url (recorded there) — don't double-register.
+    for (const a of attachments) if (!a.url) recordFile({ sessionId: session.id, source: "user", filePath: a.path, name: a.name });
   }
 
   // Assemble the turn as ordered parts so history (commands, thoughts) replays.
@@ -315,7 +339,8 @@ const server = http.createServer(async (req, res) => {
       if (busy.has(id)) return json(res, 409, { error: "busy" });
       const b = await readBody(req);
       const text = (b.text || "").trim();
-      if (!text) return json(res, 400, { error: "empty" });
+      // A message can be attachments-only (an image with nothing typed).
+      if (!text && !(b.attachments && b.attachments.length)) return json(res, 400, { error: "empty" });
       json(res, 202, { ok: true });
       runTurn(s, text, b.controls, b.attachments, b.agentId);
       return;
@@ -390,7 +415,11 @@ const server = http.createServer(async (req, res) => {
       const safe = path.basename(b.name).replace(/[^\w.\- ]/g, "_");
       const dest = path.join(config.uploadsDir, `${crypto.randomUUID()}-${safe}`);
       await fsp.writeFile(dest, Buffer.from(b.dataBase64, "base64"));
-      return json(res, 200, { path: dest, name: safe });
+      // Register right away so the phone gets a capability URL for displaying the
+      // attachment in the chat (image thumbnails / download links) and the sidebar
+      // lists it. runTurn skips re-recording attachments that carry a url.
+      const token = recordFile({ sessionId: b.sessionId || "", source: "user", filePath: dest, name: safe });
+      return json(res, 200, { path: dest, name: safe, url: `/api/files/${token}` });
     }
 
     // permission decision requested by the agent's hook (a child process).
@@ -414,8 +443,11 @@ const server = http.createServer(async (req, res) => {
       // the answer reaches the agent in-turn. Auto-approve modes don't apply here.
       if (b.tool === "AskUserQuestion") {
         const id = createPermission();
-        publish(b.sessionId, { type: "_gateway", subtype: "question_request", id, input: b.input });
+        const ev = { type: "_gateway", subtype: "question_request", id, input: b.input };
+        trackCard(b.sessionId, id, ev);
+        publish(b.sessionId, ev);
         const answer = await waitPermission(id, 120000);
+        untrackCard(b.sessionId, id);
         const reason = !answer || answer === "deny"
           ? "The user did not answer the question in time. Make a reasonable assumption or ask again next turn."
           : `The user answered your question(s):\n${answer}\n\nUse these answers to continue — do not call AskUserQuestion again for this.`;
@@ -438,8 +470,11 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, { decision: "allow" });
       }
       const id = createPermission();
-      publish(b.sessionId, { type: "_gateway", subtype: "permission_request", id, tool: b.tool, input: b.input });
+      const ev = { type: "_gateway", subtype: "permission_request", id, tool: b.tool, input: b.input };
+      trackCard(b.sessionId, id, ev);
+      publish(b.sessionId, ev);
       const decision = await waitPermission(id, 120000);
+      untrackCard(b.sessionId, id);
       return json(res, 200, { decision });
     }
 
@@ -449,8 +484,11 @@ const server = http.createServer(async (req, res) => {
     if (p === "/internal/question" && m === "POST") {
       const b = await readBody(req);
       const id = createPermission();
-      publish(b.sessionId, { type: "_gateway", subtype: "question_request", id, input: { questions: b.questions || [] } });
+      const ev = { type: "_gateway", subtype: "question_request", id, input: { questions: b.questions || [] } };
+      trackCard(b.sessionId, id, ev);
+      publish(b.sessionId, ev);
       const answer = await waitPermission(id, 300000); // up to 5 min for the user to choose
+      untrackCard(b.sessionId, id);
       return json(res, 200, { answer: (!answer || answer === "deny") ? "" : answer });
     }
 
@@ -524,6 +562,10 @@ const server = http.createServer(async (req, res) => {
       if (busy.has(id) || (live && live.length)) {
         res.write(`data: ${JSON.stringify({ type: "_gateway", subtype: "snapshot", parts: live || [], busy: busy.has(id) })}\n\n`);
       }
+      // Replay any permission/question cards still awaiting an answer (they were
+      // published live, but this subscriber may have missed them — a chat switch
+      // or a reconnect). Sent after the snapshot so cards land on rendered history.
+      for (const ev of pendingCards.get(id)?.values() || []) res.write(`data: ${JSON.stringify(ev)}\n\n`);
       const unsub = subscribe(id, res);
       // Frequent comments keep the connection warm through proxy idle timeouts.
       const ping = setInterval(() => res.write(": ping\n\n"), 15000);

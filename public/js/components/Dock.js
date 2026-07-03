@@ -16,6 +16,7 @@ export function createDock({ onPermission, onAnswerQuestion, onArchive, onActive
   const root = el("div", { id: "dock", class: "dock", hidden: "" });
   const perms = [];     // pending permission requests, FIFO
   let permBlock = null; // the rendered permission area (front card + batch bar)
+  const asks = new Map(); // question request id -> its card (dedupe + external removal)
 
   // Tell the composer whenever a card appears/disappears, so it can block sending
   // while an answer is pending. Only fire on real transitions.
@@ -27,10 +28,20 @@ export function createDock({ onPermission, onAnswerQuestion, onArchive, onActive
   const sync = () => { if (!root.children.length) root.setAttribute("hidden", ""); notifyActive(); };
   const show = () => { root.removeAttribute("hidden"); notifyActive(); };
   const archive = (node) => onArchive && onArchive(node);
-  function clear() { perms.length = 0; permBlock = null; root.innerHTML = ""; sync(); }
+  function clear() { perms.length = 0; permBlock = null; asks.clear(); root.innerHTML = ""; sync(); }
+
+  // Drop a card whose request was resolved elsewhere (another tab) or timed out
+  // server-side — no decision to archive, it just stops being answerable.
+  function remove(id) {
+    const i = perms.findIndex((r) => r.id === id);
+    if (i !== -1) { perms.splice(i, 1); renderPerms(); }
+    const card = asks.get(id);
+    if (card) { asks.delete(id); card.remove(); sync(); }
+  }
 
   // ---- permissions ----
   function addPermission(req) {
+    if (perms.some((r) => r.id === req.id)) return; // stream replay of a card already up
     if (req.autoAllow) { decide(req, "allow"); return; } // "Allow always" → resolve at once, no card
     perms.push(req);
     renderPerms();
@@ -97,6 +108,7 @@ export function createDock({ onPermission, onAnswerQuestion, onArchive, onActive
   // `req` = { id, questions:[{ header, question, multiSelect, options:[str | {label,description}] }] }.
   // Every question also gets an "Other" choice that reveals a free-text box.
   function addQuestion(req) {
+    if (asks.has(req.id)) return; // stream replay of a card already up
     const questions = req.questions || [];
     const multi = questions.length > 1;
     const card = el("div", { class: "card ask" });
@@ -202,6 +214,7 @@ export function createDock({ onPermission, onAnswerQuestion, onArchive, onActive
         return `${q.header || q.question || `Q${i + 1}`}: ${parts.join(", ")}`;
       });
       onAnswerQuestion(req.id, lines.join("\n"));
+      asks.delete(req.id);
       card.remove(); sync();
       const rec = el("div", { class: "msg ask decided allowed" }, el("div", { class: "perm-head" }, icon("check"), el("span", { text: "Answered" })));
       for (const line of lines) rec.appendChild(el("div", { class: "ask-q", text: line }));
@@ -209,8 +222,9 @@ export function createDock({ onPermission, onAnswerQuestion, onArchive, onActive
     }
 
     showTab(0);
+    asks.set(req.id, card);
     root.appendChild(card); show();
   }
 
-  return { el: root, addPermission, addQuestion, clear };
+  return { el: root, addPermission, addQuestion, remove, clear };
 }

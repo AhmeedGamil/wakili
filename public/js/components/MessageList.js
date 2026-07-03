@@ -63,8 +63,25 @@ export function createMessageList() {
     if (card) awaiting.push({ card, id });
   }
 
-  function userMessage(text) {
-    root.appendChild(el("div", { class: "msg user" }, writeText(el("div", { class: "bubble" }), text)));
+  // One sent attachment as its own right-aligned card: images show just the
+  // picture (tap to open full size); other files show an icon + the name.
+  function attachmentCard(a) {
+    const isImg = a.image || /\.(png|jpe?g|gif|webp|svg|bmp|heic)$/i.test(a.name || "");
+    const src = a.url || "";
+    if (isImg && src) {
+      return el("div", { class: "msg user" },
+        el("a", { class: "att-msg img", href: src, target: "_blank" }, el("img", { src, alt: a.name || "image" })));
+    }
+    const card = el("div", { class: "att-msg doc" }, icon("paperclip"), el("span", { class: "att-msg-name", text: a.name || "file" }));
+    return el("div", { class: "msg user" }, src ? el("a", { class: "att-msg-link", href: src, target: "_blank", download: a.name || "" }, card) : card);
+  }
+
+  // Accepts a plain string (text only) or { text, attachments }. Attachments
+  // each render as an independent card, then the text as its own bubble.
+  function userMessage(m) {
+    const { text, attachments } = typeof m === "string" ? { text: m, attachments: [] } : { text: m.text || "", attachments: m.attachments || [] };
+    for (const a of attachments) root.appendChild(attachmentCard(a));
+    if (text) root.appendChild(el("div", { class: "msg user" }, writeText(el("div", { class: "bubble" }), text)));
     stick = true; // sending a message always jumps to the bottom
     scroll();
   }
@@ -102,7 +119,7 @@ export function createMessageList() {
     root.innerHTML = "";
     reset();
     for (const m of messages) {
-      if (m.role === "user") userMessage(m.text);
+      if (m.role === "user") userMessage({ text: m.text, attachments: m.attachments || [] });
       else if (m.parts) renderParts(m.parts);
       else if (m.text) assistantMessage(m.text);
     }

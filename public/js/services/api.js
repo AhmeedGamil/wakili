@@ -20,14 +20,24 @@ function loadToken() {
 let TOKEN = loadToken();
 const withT = (url) => url + (url.includes("?") ? "&" : "?") + "t=" + encodeURIComponent(TOKEN);
 
-async function call(method, url, body) {
+// On a dead/slow connection a bare fetch can hang for minutes with no feedback,
+// so every call aborts after `timeout` ms and rejects — callers surface the
+// failure (toast/retry) instead of appearing frozen. Long-running endpoints
+// (shell commands, uploads) pass a higher budget.
+async function call(method, url, body, timeout = 15000) {
   const headers = { "x-auth-token": TOKEN };
   if (body) headers["Content-Type"] = "application/json";
-  const res = await fetch(url, {
-    method,
-    headers,
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeout);
+  let res;
+  try {
+    res = await fetch(url, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+      signal: ctrl.signal,
+    });
+  } finally { clearTimeout(timer); }
   if (res.status === 401) throw new Error("unauthorized — open the link with its ?t= token again");
   if (!res.ok && res.status !== 409) throw new Error(`${method} ${url} -> ${res.status}`);
   return res.status === 204 ? null : res.json().catch(() => null);
@@ -52,11 +62,13 @@ export const api = {
   deleteSession: (id) => call("DELETE", `/api/sessions/${id}`),
   send: (id, text, controls, attachments, agentId) =>
     call("POST", `/api/sessions/${id}/messages`, { text, controls, attachments, agentId }),
-  exec: (id, command) => call("POST", `/api/sessions/${id}/exec`, { command }),
+  // Shell commands can legitimately run up to the server's 60s cap — give them room.
+  exec: (id, command) => call("POST", `/api/sessions/${id}/exec`, { command }, 90000),
   // Terminal page: stateful shell — runs in `cwd`, returns { ok, output, cwd }.
-  term: (id, command, cwd) => call("POST", `/api/sessions/${id}/term`, { command, cwd }),
+  term: (id, command, cwd) => call("POST", `/api/sessions/${id}/term`, { command, cwd }, 90000),
   stop: (id) => call("POST", `/api/sessions/${id}/stop`),
-  upload: (name, dataBase64) => call("POST", "/api/upload", { name, dataBase64 }),
+  // Uploads move real bytes over possibly-slow links — the most generous budget.
+  upload: (name, dataBase64, sessionId) => call("POST", "/api/upload", { name, dataBase64, sessionId }, 120000),
   answerPermission: (id, requestId, decision, tool) =>
     call("POST", `/api/sessions/${id}/permission`, { id: requestId, decision, tool }),
   // AskUserQuestion answer: same endpoint, carries the chosen answer text.

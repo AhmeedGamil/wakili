@@ -12,7 +12,7 @@ import { el } from "./dom.js";
 import { icon } from "./icons.js";
 
 export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal, commands = [] }) {
-  let pending = []; // [{ name, dataBase64 }]
+  let pending = []; // [{ name, dataBase64, dataUrl, isImg }]
   let items = [];   // commands currently shown in the menu
   let active = 0;   // highlighted index
   let menuOpen = false;
@@ -22,6 +22,7 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
   const input = el("textarea", { id: "input", rows: "1", placeholder: "type / for command" });
   const send = el("button", { class: "btn send", type: "submit", "aria-label": "Send" }, icon("arrow-up"));
   const fileInput = el("input", { type: "file", multiple: "", style: "display:none" });
+  const imgInput = el("input", { type: "file", multiple: "", accept: "image/*", style: "display:none" });
   const attachBtn = el("button", { class: "btn attach", type: "button", title: "Attach files", "aria-label": "Attach" }, icon("plus"));
   const chips = el("div", { class: "chips" });
   const menu = el("div", { class: "slash-menu", hidden: "" });
@@ -29,7 +30,7 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
   const queued = el("div", { class: "queued", hidden: "" }); // pending message shown while busy
 
   const bar = el("div", { class: "composer-bar" }, attachBtn, input, send);
-  const root = el("form", { id: "composer", class: "composer" }, menu, addMenu, queued, chips, bar, fileInput);
+  const root = el("form", { id: "composer", class: "composer" }, menu, addMenu, queued, chips, bar, fileInput, imgInput);
 
   function autoSize() {
     input.style.height = "auto";
@@ -57,11 +58,18 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
     send.disabled = blocked;
     root.classList.toggle("blocked", blocked);
   }
+  // Pending attachments preview: 1:1 cards flowing from the top-left. Images fill
+  // the card (no name); files show an icon top-left + a 2-line-max name at the
+  // bottom. The × at the top-right removes the attachment.
   function renderChips() {
     chips.innerHTML = "";
     pending.forEach((a, i) => {
-      const remove = el("button", { class: "chip-x", type: "button", onClick: () => { pending.splice(i, 1); renderChips(); } }, "×");
-      chips.appendChild(el("div", { class: "chip" }, a.name, remove));
+      const remove = el("button", { class: "att-x", type: "button", "aria-label": "Remove", onClick: () => { pending.splice(i, 1); renderChips(); } }, icon("x"));
+      const card = el("div", { class: "att-card" + (a.isImg ? " img" : ""), title: a.name });
+      if (a.isImg) card.appendChild(el("img", { src: a.dataUrl, alt: a.name }));
+      else card.append(icon("paperclip", "att-ico"), el("div", { class: "att-name", text: a.name }));
+      card.appendChild(remove);
+      chips.appendChild(card);
     });
     refreshButton(); // attachments count as content
   }
@@ -114,14 +122,17 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
     input.blur();    // drop the mobile keyboard once the message is on its way
   }
 
-  // ---- + (add) menu: choose Add files or open the Terminal page ----
+  // ---- + (add) menu: attach Images / Files, or open the Terminal page ----
   function closeAddMenu() { addMenu.setAttribute("hidden", ""); }
   function openAddMenu() {
     addMenu.innerHTML = "";
     addMenu.append(
       el("button", { type: "button", class: "add-item",
+        onMousedown: (e) => { e.preventDefault(); closeAddMenu(); imgInput.click(); } },
+        icon("image"), el("span", { text: "Images" })),
+      el("button", { type: "button", class: "add-item",
         onMousedown: (e) => { e.preventDefault(); closeAddMenu(); fileInput.click(); } },
-        icon("paperclip"), el("span", { text: "Add files" })),
+        icon("paperclip"), el("span", { text: "Files" })),
       el("button", { type: "button", class: "add-item",
         onMousedown: (e) => { e.preventDefault(); closeAddMenu(); onOpenTerminal && onOpenTerminal(); } },
         icon("terminal"), el("span", { text: "Terminal" })),
@@ -129,17 +140,22 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
     addMenu.removeAttribute("hidden");
   }
   attachBtn.onclick = () => { if (addMenu.hasAttribute("hidden")) openAddMenu(); else closeAddMenu(); };
-  fileInput.onchange = () => {
-    for (const file of fileInput.files) {
+  // Read picked files to base64; the full data URL doubles as the image preview.
+  const readPicked = (inp) => {
+    for (const file of inp.files) {
+      const isImg = /^image\//.test(file.type) || /\.(png|jpe?g|gif|webp|svg|bmp|heic)$/i.test(file.name);
       const reader = new FileReader();
       reader.onload = () => {
-        pending.push({ name: file.name, dataBase64: String(reader.result).split(",")[1] });
+        const dataUrl = String(reader.result);
+        pending.push({ name: file.name, dataBase64: dataUrl.split(",")[1], dataUrl, isImg });
         renderChips();
       };
       reader.readAsDataURL(file);
     }
-    fileInput.value = "";
+    inp.value = "";
   };
+  fileInput.onchange = () => readPicked(fileInput);
+  imgInput.onchange = () => readPicked(imgInput);
 
   // Keep focus on the textarea when the button is tapped — otherwise the first tap
   // just blurs the input (dismissing the keyboard) and you'd need a second tap.

@@ -12,6 +12,9 @@ export function parseClaudeEvent(ev) {
     if (ev.subtype === "stopped") return { kind: "stopped" };
     if (ev.subtype === "permission_request") return { kind: "permission", id: ev.id, tool: ev.tool, input: ev.input };
     if (ev.subtype === "question_request") return { kind: "question", id: ev.id, questions: ev.input?.questions || [] };
+    // A pending request was answered elsewhere (another tab) or timed out — the
+    // card, if still on screen, should be dropped without archiving a decision.
+    if (ev.subtype === "request_resolved") return { kind: "requestResolved", id: ev.id };
     // A gated tool the gateway auto-approved (no card shown) — surface it so the UI
     // shows what the agent ran (a diff card for edits/Bash, a chip otherwise). Full
     // input is kept so the diff is renderable.

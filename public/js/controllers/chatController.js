@@ -86,6 +86,7 @@ export function createChatController({ api, store, emitter }) {
         case "toolResult": emitter.emit("toolResult", { id: ev.id, output: ev.output, isError: ev.isError }); break;
         case "question": emitter.emit("question", { id: ev.id, questions: ev.questions }); break;
         case "permission": emitter.emit("permission", { id: ev.id, tool: ev.tool, input: ev.input, autoAllow: store.get().autoAllow }); break;
+        case "requestResolved": emitter.emit("requestResolved", { id: ev.id }); break;
         case "file":
           store.set((s) => ({ files: { ...s.files, received: [...s.files.received, ev.file] } }));
           emitter.emit("file", ev.file);
@@ -114,7 +115,10 @@ export function createChatController({ api, store, emitter }) {
   }
 
   async function refreshSessions() {
-    const sessions = await api.listSessions();
+    // Offline is normal here (background poll / best-effort refresh after a turn)
+    // — keep the last known list instead of surfacing an error.
+    let sessions;
+    try { sessions = await api.listSessions(); } catch { return; }
     // Reconcile per-session busy from the server's view (keeps background badges
     // fresh). EXCEPT the active session: its busy is driven by its live stream
     // (turn_start/turn_end) and local sends, so a stale poll must not overwrite it
@@ -129,9 +133,13 @@ export function createChatController({ api, store, emitter }) {
     for (const sid of Object.keys(store.get().queued)) if (!busyIds[sid]) flushQueued(sid);
   }
 
-  async function openSession(id) {
-    const s = await api.getSession(id);
-    if (!s) return;
+  // Transcripts from previous opens, so switching chats works instantly (and at
+  // all) on a slow or dead connection; the fresh fetch reconciles over it.
+  const sessionCache = new Map(); // id -> last-fetched session object
+  let openSeq = 0; // guards against a slow response landing after a newer switch
+
+  // Make `s` the on-screen session: state, history render, live stream.
+  function applySession(id, s) {
     store.set((st) => {
       const agentId = s.agentId || st.agentId;
       const agent = st.agents.find((a) => a.id === agentId);
@@ -140,6 +148,29 @@ export function createChatController({ api, store, emitter }) {
     saveLastConfig(); // the session you're on becomes the default for new chats
     emitter.emit("historyLoaded", s.messages);
     openStream(id);
+  }
+
+  async function openSession(id, attempt = 0) {
+    const seq = ++openSeq;
+    const cached = sessionCache.get(id);
+    if (cached) applySession(id, cached); // optimistic: switch now, reconcile below
+    let s = null, err = null;
+    try { s = await api.getSession(id); } catch (e) { err = e; }
+    if (seq !== openSeq) return; // the user has already switched elsewhere
+    if (!s) {
+      // A 404 means the session is gone (deleted on another device) — don't retry.
+      if (err && String(err).includes("404")) { sessionCache.delete(id); refreshSessions(); return; }
+      if (cached) return; // the cached view stays up; the stream reconnects on its own
+      if (attempt === 0) emitter.emit("toast", "Can't reach the laptop — retrying…");
+      setTimeout(() => { if (seq === openSeq) openSession(id, attempt + 1); }, 2500);
+      return;
+    }
+    sessionCache.set(id, s);
+    // Skip the re-render (and stream reopen) when the fresh copy matches what the
+    // cache already put on screen — avoids a needless flicker on every switch.
+    const same = cached && cached.updatedAt === s.updatedAt && (cached.messages || []).length === (s.messages || []).length;
+    if (same) store.set({ activeSession: s });
+    else applySession(id, s);
     refreshSessions();
   }
 
@@ -154,6 +185,7 @@ export function createChatController({ api, store, emitter }) {
 
   async function deleteSession(id) {
     const wasActive = store.get().activeId === id;
+    sessionCache.delete(id);
     await api.deleteSession(id);
     await refreshSessions();
     if (wasActive) {
@@ -165,18 +197,27 @@ export function createChatController({ api, store, emitter }) {
 
   // Deliver one turn to a specific session: upload attachments, render the user
   // bubble only if that session is on screen, mark it busy, and post the turn.
+  // Attachments render as their own cards (image/file) separate from the text.
   async function deliver(id, text, raw, controls, agentId) {
     const attachments = [];
     for (const a of raw || []) {
-      const up = await api.upload(a.name, a.dataBase64);
-      if (up && up.path) attachments.push({ name: up.name, path: up.path });
+      let up = null;
+      try { up = await api.upload(a.name, a.dataBase64, id); } catch { up = null; }
+      if (!up || !up.path) { emitter.emit("toast", `Upload failed: ${a.name} — message not sent`); return; }
+      attachments.push({ name: up.name, path: up.path, url: up.url || "" });
     }
     const onScreen = store.get().activeId === id;
     if (attachments.length && onScreen) store.set((s) => ({ files: { ...s.files, uploaded: [...s.files.uploaded, ...attachments] } }));
-    const tag = attachments.length ? `\nAttached: ${attachments.map((a) => a.name).join(", ")}` : "";
-    if (onScreen) { emitter.emit("userMessage", text + tag); emitter.emit("turnStart"); } // show the working pulse right away (don't wait for the server's turn_start)
+    if (onScreen) { emitter.emit("userMessage", { text, attachments }); emitter.emit("turnStart"); } // show the working pulse right away (don't wait for the server's turn_start)
     setBusy(id, true);
-    const r = await api.send(id, text, controls, attachments, agentId);
+    let r = null;
+    try { r = await api.send(id, text, controls, attachments, agentId); }
+    catch {
+      setBusy(id, false);
+      if (store.get().activeId === id) emitter.emit("stopped", { interrupted: false });
+      emitter.emit("toast", "Couldn't send — check the connection");
+      return;
+    }
     if (r && r.error === "busy") setBusy(id, false);
   }
 
