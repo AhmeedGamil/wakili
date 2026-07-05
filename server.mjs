@@ -11,7 +11,7 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { spawn, exec } from "node:child_process";
 
-import { config } from "./src/config.mjs";
+import { config, ROOT } from "./src/config.mjs";
 import { tailscaleUrl, startCloudflare } from "./src/tunnel.mjs";
 import { listFolders, isDir, createFolder } from "./src/folders.mjs";
 import { qrTerminal } from "./src/qr.mjs";
@@ -20,7 +20,8 @@ import { commandsReady, modelsReady } from "./src/agents/claude.mjs";
 import { sessionStore } from "./src/sessions/store.mjs";
 import { subscribe, subscribeAll, publish } from "./src/sse.mjs";
 import { createPermission, waitPermission, resolvePermission } from "./src/permissions.mjs";
-import { lockScreen, screenOff, setKeepAwake, powerStatus, shutdownPower } from "./src/power.mjs";
+import { lockScreen, screenOff, setKeepAwake, powerStatus, shutdownPower, shutdownComputer } from "./src/power.mjs";
+import { autostartStatus, setAutostart, reconcileAutostart } from "./src/autostart.mjs";
 
 const EDIT_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]); // auto-approved under acceptEdits
 const busy = new Set(); // session ids with an in-flight turn
@@ -265,6 +266,7 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/power" && m === "GET") return json(res, 200, powerStatus());
     if (p === "/api/lock-screen" && m === "POST") return json(res, 200, await lockScreen());
     if (p === "/api/screen-off" && m === "POST") return json(res, 200, await screenOff());
+    if (p === "/api/shutdown" && m === "POST") return json(res, 200, await shutdownComputer());
     // Combined: lock first, then blank the display (locking can wake it, so order matters).
     if (p === "/api/lock-off" && m === "POST") {
       const lock = await lockScreen();
@@ -275,6 +277,14 @@ const server = http.createServer(async (req, res) => {
       const b = await readBody(req);
       setKeepAwake(!!b.on);
       return json(res, 200, powerStatus());
+    }
+    // Start-at-login toggle. Registers/unregisters the gateway with the OS's
+    // per-user autostart mechanism (Run key / LaunchAgent / systemd user unit),
+    // so after one manual launch the developer never needs the terminal again.
+    if (p === "/api/autostart" && m === "GET") return json(res, 200, await autostartStatus());
+    if (p === "/api/autostart" && m === "POST") {
+      const b = await readBody(req);
+      return json(res, 200, await setAutostart(!!b.on));
     }
 
     // The connection switcher: every URL this same gateway answers on. Picking
@@ -305,7 +315,11 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/sessions" && m === "GET") return json(res, 200, (await sessionStore.list()).map(withMeta));
     if (p === "/api/sessions" && m === "POST") {
       const b = await readBody(req);
-      return json(res, 201, withMeta(await sessionStore.create({ agentId: b.agentId, model: b.model, cwd: b.cwd || null })));
+      // Validate cwd like PATCH does — a bad path here (typo, mangled escape)
+      // would otherwise surface later as a spawn failure mid-turn.
+      const cwd = typeof b.cwd === "string" ? b.cwd.trim() : "";
+      if (cwd && !(await isDir(cwd))) return json(res, 400, { error: "not a directory" });
+      return json(res, 201, withMeta(await sessionStore.create({ agentId: b.agentId, model: b.model, cwd: cwd || null })));
     }
 
     if ((mm = p.match(/^\/api\/sessions\/([\w-]+)$/))) {
@@ -422,6 +436,22 @@ const server = http.createServer(async (req, res) => {
       // lists it. runTurn skips re-recording attachments that carry a url.
       const token = recordFile({ sessionId: b.sessionId || "", source: "user", filePath: dest, name: safe });
       return json(res, 200, { path: dest, name: safe, url: `/api/files/${token}` });
+    }
+
+    // Undo an eager upload (the phone uploads on file-pick now; removing the
+    // chip before sending deletes the file again). Only paths inside the
+    // uploads folder are accepted, so this can't be aimed at arbitrary files.
+    if (p === "/api/upload/delete" && m === "POST") {
+      const b = await readBody(req);
+      const target = path.resolve(String(b.path || ""));
+      if (!target.startsWith(path.resolve(config.uploadsDir) + path.sep)) return json(res, 400, { error: "bad path" });
+      // The registry rows don't carry the path — resolve it to its download tokens.
+      const tokens = new Set();
+      for (const [t, f] of files) if (f.path && path.resolve(f.path) === target) tokens.add(t);
+      for (const t of tokens) files.delete(t);
+      if (tokens.size) { filesLog = filesLog.filter((f) => !tokens.has(f.token)); saveFilesLog(); }
+      try { await fsp.unlink(target); } catch { /* already gone */ }
+      return json(res, 200, { ok: true });
     }
 
     // permission decision requested by the agent's hook (a child process).
@@ -685,18 +715,48 @@ function shutdown() {
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
+// An autostarted instance and a manual launch will eventually race for the
+// port. Losing the race means a gateway is already up — that's success, not a
+// crash, so exit 0 (also keeps systemd's Restart=on-failure from loop-restarting).
+server.on("error", (e) => {
+  if (e && e.code === "EADDRINUSE") {
+    console.log(`\n  Port ${config.port} is already in use — the gateway looks to be running already.\n`);
+    process.exit(0);
+  }
+  throw e;
+});
+
+// Finish the store relocation started in config.mjs: config copied <repo>/data →
+// the home store; here we remove the in-repo original. Login autostart's launcher
+// lived inside that folder (and, pre-rename, was registered under the old "Remote
+// Agent" identity), so reconcileAutostart() carries it over to the new Wakili
+// identity/location FIRST — only then is the old copy deleted, and only if that
+// succeeded, so a failure never leaves login startup broken.
+async function finishStoreRelocation() {
+  const oldData = path.join(ROOT, "data");
+  try {
+    const ok = await reconcileAutostart();
+    if (!ok) { console.log(`  Kept ${oldData} (couldn't migrate autostart yet)`); return; }
+    if (!fsSync.existsSync(oldData)) return;                                   // nothing to clean up
+    if (!fsSync.existsSync(path.join(config.runtimeDir, "token.txt"))) return; // new store not ready — don't delete
+    await fsp.rm(oldData, { recursive: true, force: true });
+    console.log(`  Session store moved out of the repo → ${config.runtimeDir}`);
+  } catch (e) { /* leave the old copy in place if anything goes wrong */ }
+}
+
 server.listen(config.port, async () => {
+  await finishStoreRelocation();
   const ips = Object.values(os.networkInterfaces())
     .flat()
     .filter((n) => n && n.family === "IPv4" && !n.internal)
     .map((n) => n.address);
   reachable.lan = ips; // remember LAN addresses for the page's connection switcher
   // Keep the machine awake by default so remote turns aren't suspended by idle
-  // sleep while you're away (the screen can still lock). Set REMOTE_AGENT_KEEP_AWAKE=0
+  // sleep while you're away (the screen can still lock). Set WAKILI_KEEP_AWAKE=0
   // to opt out; toggle it live from the app.
-  if (process.env.REMOTE_AGENT_KEEP_AWAKE !== "0") setKeepAwake(true);
-  console.log(`\n  Remote Agent gateway running on :${config.port}\n`);
-  console.log(`  Laptop:  http://localhost:${config.port}/?t=${config.token}`);
+  if (process.env.WAKILI_KEEP_AWAKE !== "0") setKeepAwake(true);
+  console.log(`\n  Wakili gateway running on :${config.port}\n`);
+  console.log(`  Computer:  http://localhost:${config.port}/?t=${config.token}`);
   const phoneUrl = ips.length ? withToken(`http://${ips[0]}:${config.port}`) : "";
   for (const ip of ips) console.log(`  Phone:   ${withToken(`http://${ip}:${config.port}`)}   (same Wi-Fi)`);
   if (phoneUrl) qrTargets.push({ label: "Scan to open on your phone (same Wi-Fi)", url: phoneUrl });

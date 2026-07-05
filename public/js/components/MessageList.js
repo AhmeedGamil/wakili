@@ -40,12 +40,19 @@ export function createMessageList() {
     stick = distance <= STICK_THRESHOLD;
   });
   const scroll = () => { if (stick) root.scrollTop = root.scrollHeight; };
+  // Note: we deliberately do NOT re-pin to the bottom on pane resize. Tapping the
+  // composer opens the mobile keyboard, which shrinks the viewport (interactive-
+  // widget=resizes-content); a resize-triggered scroll made the whole chat jump
+  // upward on focus. Leaving scrollTop where it is keeps the content anchored.
+  // New messages and streaming still stick to the bottom via scroll() directly.
   const tw = createTypewriter(scroll);
   // Streaming text paints through the same writeText path, so live deltas are
   // formatted (or not) consistently with the stored history and re-render on toggle.
   tw.setRenderer((node, full) => writeText(node, full));
 
   let workingEl = null;   // neutral processing pulse
+  let turnActive = false; // a turn is running (drives the idle re-show below)
+  let idleTimer = 0;      // re-shows the pulse when streaming text goes quiet mid-turn
   let textEl = null;      // current open answer block
   let thinkEl = null;     // current open thoughts body
   let thinkSummary = null;
@@ -55,7 +62,9 @@ export function createMessageList() {
   // sequentially, so the oldest unfilled card is the right one).
   let awaiting = [];
 
-  function reset() { tw.reset(); workingEl = textEl = thinkEl = thinkSummary = thinkLabel = null; awaiting = []; }
+  function reset() { tw.reset(); endTurnState(); workingEl = textEl = thinkEl = thinkSummary = thinkLabel = null; awaiting = []; }
+  // The turn is over: stop tracking so the idle timer can't re-show a stale pulse.
+  function endTurnState() { turnActive = false; clearTimeout(idleTimer); }
 
   // Register a freshly-rendered tool card so a later tool_result can fill it.
   function registerToolCard(node, id) {
@@ -102,14 +111,26 @@ export function createMessageList() {
     const discardBtn = el("button", { class: "ob-btn", type: "button", onClick: () => onDiscard && onDiscard() }, "Discard");
     add(el("div", { class: "msg user outbox" }, el("div", { class: "ob-row" }, label, retryBtn, discardBtn)));
     const row = nodes[nodes.length - 1];
+    // "Sending…" only matters while an upload is in flight — a text-only message
+    // just appears. A failure surfaces "Not sent" + Retry/Discard and drops the
+    // optimistic pulse below (no turn will start).
+    const hasFiles = (attachments || []).length > 0;
     const update = (st) => {
       if (st === "sent") { row.remove(); return; }
       const failed = st === "failed";
+      if (failed) { endTurnState(); hideWorking(); }
+      row.hidden = !failed && !hasFiles;
       label.textContent = failed ? "Not sent" : "Sending…";
       row.classList.toggle("failed", failed);
       retryBtn.hidden = discardBtn.hidden = !failed;
     };
     update(status || "sending");
+    // Optimistic "working" pulse: show it the instant the message is on screen,
+    // so the busy indicator appears together with your message instead of lagging
+    // until the server's turn_start (the agent spawn adds a beat). The real
+    // turn_start re-calls showWorking (idempotent) and streaming clears it; a
+    // failed send clears it via update() above.
+    if ((status || "sending") !== "failed") { turnActive = true; showWorking(); }
     stick = true;
     scroll();
     return { update, remove: () => nodes.forEach((n) => n.remove()) };
@@ -156,7 +177,7 @@ export function createMessageList() {
   // next live delta continues below it.
   function renderSnapshot(parts, busy) {
     renderParts(parts || [], true);
-    if (busy) showWorking();
+    if (busy) { turnActive = true; showWorking(); }
     scroll();
   }
 
@@ -168,6 +189,15 @@ export function createMessageList() {
     scroll();
   }
   function hideWorking() { if (workingEl) { workingEl.remove(); workingEl = null; } }
+
+  // Streaming text/thoughts stand in for the pulse while they flow. When they go
+  // quiet mid-turn (the model composing its next tool call, say) that indicator
+  // vanishes though work continues — so re-show the pulse after a short idle. Any
+  // fresh delta or segment hides it again; every turn-end path clears the timer.
+  function armIdlePulse() {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => { if (turnActive) showWorking(); }, 450);
+  }
 
   // close the open text/think blocks so the next segment appends below them
   function closeSegments() {
@@ -187,7 +217,7 @@ export function createMessageList() {
     scroll();
   }
 
-  function startAssistant() { closeSegments(); showWorking(); }
+  function startAssistant() { turnActive = true; closeSegments(); showWorking(); }
 
   function feedText(t) {
     hideWorking();
@@ -197,6 +227,7 @@ export function createMessageList() {
       root.appendChild(el("div", { class: "msg assistant" }, textEl));
     }
     tw.feed(textEl, t);
+    armIdlePulse();
   }
 
   function feedThink(t) {
@@ -209,6 +240,7 @@ export function createMessageList() {
       thinkEl = body;
     }
     tw.feed(thinkEl, t);
+    armIdlePulse();
   }
 
   function addTool(tool) {
@@ -255,6 +287,7 @@ export function createMessageList() {
   function addStopped(interrupted) {
     closeSegments();
     hideWorking();
+    endTurnState();
     const label = interrupted ? "Interrupted" : "Stopped";
     root.appendChild(el("div", { class: "msg assistant" }, el("div", { class: "stopped-note" }, icon("square"), el("span", { text: label }))));
     scroll();

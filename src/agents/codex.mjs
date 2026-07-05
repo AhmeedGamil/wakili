@@ -2,7 +2,8 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { config } from "../config.mjs";
+import { config, ROOT } from "../config.mjs";
+import { ASK_DIRECTIVE } from "./claude.mjs";
 
 // --- Model discovery ---------------------------------------------------------
 // Codex keeps a fresh model list on disk (fetched from OpenAI, revalidated by
@@ -71,6 +72,38 @@ function listCommands() {
   return [...out].map(([name, desc]) => ({ name, desc }));
 }
 
+// --- MCP registration (send_to_user + ask_options) ----------------------------
+// The same MCP server the Claude adapters use, registered per spawn with `-c`
+// config overrides — nothing is ever written to the developer's
+// ~/.codex/config.toml, matching how the Claude CLI gets --mcp-config.
+//
+// Unlike Claude Code, Codex spawns MCP servers with a MINIMAL whitelisted
+// environment (PATH, HOME, ...): custom env vars on the codex child are
+// stripped, so the per-turn context (session id, gateway URL, token) must be
+// declared explicitly via mcp_servers.<name>.env — otherwise mcp-tools.mjs
+// posts to the gateway with an empty session/token and the delivery 401s.
+//
+// TOML values use single-quoted (literal) strings: on Windows the child runs
+// through cmd.exe (shell: true), which — like Codex's own argv parsing — eats
+// double quotes but passes single quotes through. An override containing
+// spaces is additionally wrapped in double quotes there so it stays one argument.
+const MCP_SERVER = path.join(ROOT, "src", "mcp-tools.mjs").replace(/\\/g, "/");
+function mcpOverrides({ sessionId, gatewayUrl }) {
+  const wrap = (v) => (config.isWin && /\s/.test(v) ? `"${v}"` : v);
+  return [
+    "-c", wrap("mcp_servers.remoteagent.command='node'"),
+    "-c", wrap(`mcp_servers.remoteagent.args=['${MCP_SERVER}']`),
+    "-c", wrap(`mcp_servers.remoteagent.env.WAKILI_SESSION='${sessionId}'`),
+    "-c", wrap(`mcp_servers.remoteagent.env.WAKILI_GATEWAY='${gatewayUrl}'`),
+    "-c", wrap(`mcp_servers.remoteagent.env.WAKILI_TOKEN='${config.token}'`),
+    // Pre-approve our tools: under approval_policy=never (how every headless
+    // turn runs) codex auto-DENIES tool calls that would need an approval
+    // prompt ("user cancelled MCP tool call") — these two are phone-facing and
+    // safe, same reasoning as the Claude settings pre-allowing send_to_user.
+    "-c", wrap("mcp_servers.remoteagent.default_tools_approval_mode='approve'"),
+  ];
+}
+
 // Map the phone's approval choice to Codex's sandbox / approval flags.
 //   read-only      -> "Ask for approval": Codex can only read; risky actions are held back
 //   workspace-write -> "Approve for me":  auto-approve edits/commands inside the workspace
@@ -87,8 +120,10 @@ const APPROVAL = {
 // typewriter still reveals it smoothly). Declares its own native control:
 // `reasoning` (Codex's name), not Claude's `effort`/`thinking`.
 //
-// Note: Codex runs in its own sandbox; phone-interactive permissions and the
-// send_to_user tool are Claude-only for now.
+// Codex gets the gateway's MCP tools (send_to_user for file delivery,
+// ask_options for tappable questions) via per-spawn overrides — see
+// mcpOverrides above. Tool approvals still follow Codex's own sandbox model
+// (the `approval` control), not the phone's permission cards.
 
 export const codexAgent = {
   id: "codex",
@@ -110,7 +145,7 @@ export const codexAgent = {
       default: "",
       options: [
         { value: "", label: "Default" },
-        { value: "low", label: "Low" },
+        { value: "low", label: "Light" },
         { value: "medium", label: "Medium" },
         { value: "high", label: "High" },
         { value: "xhigh", label: "Extra High" },
@@ -129,7 +164,7 @@ export const codexAgent = {
     },
   },
 
-  run({ text, controls = {}, resumeId, cwd, onEvent, onError, onClose }) {
+  run({ text, controls = {}, resumeId, sessionId, cwd, gatewayUrl, onEvent, onError, onClose }) {
     const args = ["exec"];
     if (resumeId) args.push("resume", resumeId);
     args.push("--json", "--skip-git-repo-check");
@@ -137,9 +172,27 @@ export const codexAgent = {
     if (!resumeId) args.push(...(APPROVAL[controls.approval] || APPROVAL["workspace-write"]));
     if (controls.model) args.push("-m", controls.model);
     if (controls.reasoning) args.push("-c", `model_reasoning_effort=${controls.reasoning}`);
+    args.push(...mcpOverrides({ sessionId, gatewayUrl })); // phone tools (send_to_user / ask_options), this run only
     args.push("-"); // read the prompt from stdin
 
-    const child = spawn("codex", args, { shell: config.isWin, cwd: cwd || undefined });
+    // Codex has no --append-system-prompt, so the phone directive (use
+    // ask_options for questions) rides in front of the prompt text instead.
+    const prompt = `[Gateway note: ${ASK_DIRECTIVE}]\n\n${text}`;
+
+    const child = spawn("codex", args, {
+      shell: config.isWin,
+      cwd: cwd || undefined,
+      // NOTE: codex does NOT forward these to the MCP servers it spawns (it
+      // launches them with a whitelisted env) — the MCP server gets its context
+      // via the mcp_servers.remoteagent.env overrides above. Kept on the child
+      // itself for anything codex runs directly (shell commands, hooks).
+      env: {
+        ...process.env,
+        WAKILI_SESSION: sessionId,
+        WAKILI_GATEWAY: gatewayUrl,
+        WAKILI_TOKEN: config.token,
+      },
+    });
 
     let buf = "";
     child.stdout.on("data", (chunk) => {
@@ -155,10 +208,20 @@ export const codexAgent = {
       }
     });
     child.stderr.on("data", (d) => onError && onError(d.toString()));
-    child.on("close", (code) => onClose && onClose(code));
+    let closed = false;
+    const closeOnce = (code) => { if (!closed) { closed = true; onClose && onClose(code); } };
+    child.on("close", closeOnce);
+    // A failed spawn (bad cwd, missing binary) emits 'error', not 'close'. Without
+    // this handler that error is unhandled and takes down the whole gateway.
+    child.on("error", (e) => {
+      if (onError) onError(`failed to start codex: ${e.message}`);
+      closeOnce(-1);
+    });
 
-    child.stdin.write(text);
-    child.stdin.end();
+    try {
+      child.stdin.write(prompt);
+      child.stdin.end();
+    } catch { /* surfaced via the error handler above */ }
     return child;
   },
 };
@@ -175,8 +238,11 @@ function translate(evt, onEvent) {
     if (item.type === "agent_message" && typeof item.text === "string") {
       onEvent({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: item.text } } });
     } else if (item.type !== "reasoning") {
-      // command runs, file edits, etc. -> show as a tool chip
-      onEvent({ type: "assistant", message: { content: [{ type: "tool_use", name: item.type || "item", input: item }] } });
+      // command runs, file edits, etc. -> show as a tool chip. MCP calls carry
+      // the real tool name (send_to_user, ask_options) — surface that, not
+      // the generic "mcp_tool_call".
+      const name = item.type === "mcp_tool_call" ? (item.tool || item.type) : (item.type || "item");
+      onEvent({ type: "assistant", message: { content: [{ type: "tool_use", name, input: item }] } });
     }
   }
 }

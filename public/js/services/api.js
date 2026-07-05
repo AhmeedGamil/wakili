@@ -50,7 +50,10 @@ export const api = {
   power: () => call("GET", "/api/power"),
   lockScreen: () => call("POST", "/api/lock-screen", {}),
   screenOff: () => call("POST", "/api/screen-off", {}),
+  shutdown: () => call("POST", "/api/shutdown", {}),
   keepAwake: (on) => call("POST", "/api/keep-awake", { on }),
+  autostart: () => call("GET", "/api/autostart"),
+  setAutostart: (on) => call("POST", "/api/autostart", { on }),
   listSessions: () => call("GET", "/api/sessions"),
   createSession: (body) => call("POST", "/api/sessions", body || {}),
   getSession: (id) => call("GET", `/api/sessions/${id}`),
@@ -69,6 +72,28 @@ export const api = {
   stop: (id) => call("POST", `/api/sessions/${id}/stop`),
   // Uploads move real bytes over possibly-slow links — the most generous budget.
   upload: (name, dataBase64, sessionId) => call("POST", "/api/upload", { name, dataBase64, sessionId }, 120000),
+  // Same upload, but with live progress + cancel — XHR because fetch can't
+  // report upload progress. onProgress gets 0..1; abort() cancels the transfer.
+  uploadProgress: (name, dataBase64, sessionId, onProgress) => {
+    const xhr = new XMLHttpRequest();
+    const promise = new Promise((resolve, reject) => {
+      xhr.open("POST", "/api/upload");
+      xhr.setRequestHeader("x-auth-token", TOKEN);
+      xhr.setRequestHeader("Content-Type", "application/json");
+      xhr.timeout = 120000;
+      xhr.upload.onprogress = (e) => { if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total); };
+      xhr.onload = () => {
+        if (xhr.status === 200) { try { resolve(JSON.parse(xhr.responseText)); } catch { reject(new Error("bad upload response")); } }
+        else reject(new Error(`upload -> ${xhr.status}`));
+      };
+      xhr.onerror = () => reject(new Error("upload failed"));
+      xhr.ontimeout = () => reject(new Error("upload timed out"));
+      xhr.onabort = () => reject(new Error("upload cancelled"));
+      xhr.send(JSON.stringify({ name, dataBase64, sessionId }));
+    });
+    return { promise, abort: () => { try { xhr.abort(); } catch { /* not started */ } } };
+  },
+  deleteUpload: (path) => call("POST", "/api/upload/delete", { path }),
   answerPermission: (id, requestId, decision, tool) =>
     call("POST", `/api/sessions/${id}/permission`, { id: requestId, decision, tool }),
   // AskUserQuestion answer: same endpoint, carries the chosen answer text.

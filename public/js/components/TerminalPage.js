@@ -1,9 +1,11 @@
 // Terminal page. A full-screen overlay (opened from the composer's + menu) that
 // runs raw shell commands on the laptop — no leading "!" needed, unlike the chat
-// box. The header shows the current folder, which live-updates as you `cd`. This
-// is NOT saved as a chat; only the command history is kept, on the phone
-// (localStorage, newest-first). Typing "/" recalls that history in the same menu
-// style as the agent's slash-commands.
+// box. Multiple terminals live side by side in tabs: + opens another, × closes
+// one after an inline confirmation, and each keeps its own folder and scrollback.
+// Leaving the page (even by accident) never clears anything — every terminal is
+// exactly as you left it when you come back. This is NOT saved as a chat; only
+// the command history is kept, on the phone (localStorage, newest-first). Typing
+// "/" recalls that history in the same menu style as the agent's slash-commands.
 
 import { el } from "./dom.js";
 import { icon } from "./icons.js";
@@ -63,61 +65,111 @@ function interactiveHint(command) {
 }
 
 export function createTerminalPage({ onRun }) {
-  let cwd = "";                  // current directory (echoed back by the server)
   let history = loadHistory();   // newest-first list of command strings
   let items = [];                // history entries currently shown in the menu
   let active = 0;                // highlighted index
   let menuOpen = false;
   let running = false;
+  let terms = [];                // [{ id, label, cwd, out }] — one entry per tab
+  let cur = -1;                  // index of the visible terminal
+  let counter = 0;               // ever-increasing tab number
 
   const pathEl = el("span", { class: "term-path", text: "" });
   const head = el("div", { class: "fp-head term-head" },
     el("div", { class: "term-head-left" }, icon("terminal"), el("strong", { text: "Terminal" })),
     el("button", { class: "btn ghost fp-x", type: "button", onClick: close }, icon("x")),
   );
+  const tabsBar = el("div", { class: "term-tabs" });
+  const confirmBox = el("div", { class: "term-confirm" });
+  confirmBox.hidden = true;
   const cwdBar = el("div", { class: "term-cwd" }, icon("folder"), pathEl);
-  const out = el("div", { class: "term-out" });
+  const outWrap = el("div", { class: "term-outwrap" });
   const menu = el("div", { class: "slash-menu term-menu", hidden: "" });
   const input = el("textarea", { class: "term-input", rows: "1",
-    placeholder: "run a command — type / for history",
+    placeholder: "type / for history",
     spellcheck: "false", autocapitalize: "off", autocorrect: "off" });
   const runBtn = el("button", { class: "btn send", type: "submit", "aria-label": "Run" }, icon("arrow-up-right"));
   const bar = el("div", { class: "composer-bar term-bar" }, input, runBtn);
   const form = el("form", { class: "term-form" }, menu, bar);
 
-  const panel = el("div", { class: "ft-panel term-panel" }, head, cwdBar, out, form);
+  const panel = el("div", { class: "ft-panel term-panel" }, head, tabsBar, cwdBar, confirmBox, outWrap, form);
   const overlay = el("div", { class: "fp-overlay term-overlay", hidden: "" }, panel);
   document.body.appendChild(overlay);
   overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
 
-  function setCwd(c) { cwd = c || ""; pathEl.textContent = cwd || "(default folder)"; }
+  // ---- tabs ----
+  function addTerm(startCwd) {
+    counter += 1;
+    const t = { id: counter, label: "Term " + counter, cwd: startCwd || "", out: el("div", { class: "term-out" }) };
+    outWrap.appendChild(t.out);
+    terms.push(t);
+    setCur(terms.length - 1);
+  }
+  function setCur(i) {
+    cur = i;
+    terms.forEach((t, k) => { t.out.hidden = k !== cur; });
+    const t = terms[cur];
+    pathEl.textContent = t && t.cwd ? t.cwd : "(default folder)";
+    renderTabs();
+  }
+  function renderTabs() {
+    tabsBar.innerHTML = "";
+    terms.forEach((t, i) => {
+      const x = el("span", { class: "term-tab-x", title: "Close " + t.label,
+        onClick: (e) => { e.stopPropagation(); askClose(i); } }, icon("x"));
+      tabsBar.appendChild(el("button",
+        { type: "button", class: "term-tab" + (i === cur ? " on" : ""), onClick: () => { hideConfirm(); setCur(i); input.focus(); } },
+        el("span", { class: "term-tab-label", text: t.label }), x));
+    });
+    tabsBar.appendChild(el("button", { type: "button", class: "term-tab term-tab-add", title: "New terminal",
+      onClick: () => { hideConfirm(); addTerm(terms[cur] ? terms[cur].cwd : ""); input.focus(); } }, icon("plus")));
+  }
+  // Closing throws away that tab's scrollback, so it asks first — inline, not a
+  // browser dialog (those don't render in every WebView).
+  function askClose(i) {
+    const t = terms[i];
+    confirmBox.replaceChildren(
+      el("span", { class: "term-confirm-text", text: `Close ${t.label}? Its output will be lost.` }),
+      el("button", { class: "btn danger", type: "button", onClick: () => { hideConfirm(); closeTerm(i); } }, "Close"),
+      el("button", { class: "btn ghost", type: "button", onClick: hideConfirm }, "Cancel"),
+    );
+    confirmBox.hidden = false;
+  }
+  function hideConfirm() { confirmBox.hidden = true; }
+  function closeTerm(i) {
+    const [t] = terms.splice(i, 1);
+    if (t) t.out.remove();
+    if (!terms.length) { close(); return; }        // last tab closed → leave the page
+    setCur(Math.min(i, terms.length - 1));
+    input.focus();
+  }
 
   function open(startCwd) {
-    setCwd(startCwd);
+    if (!terms.length) addTerm(startCwd);          // returning finds everything as it was
     overlay.removeAttribute("hidden");
     setTimeout(() => input.focus(), 0);
   }
-  function close() { overlay.setAttribute("hidden", ""); closeMenu(); }
+  function close() { overlay.setAttribute("hidden", ""); closeMenu(); hideConfirm(); }
 
   // ---- output (scrollback) ----
-  function scrollDown() { out.scrollTop = out.scrollHeight; }
-  function printCommand(command) {
-    out.appendChild(el("div", { class: "term-line term-cmd" },
-      el("span", { class: "term-prompt", text: shortCwd(cwd) + " $" }),
+  function scrollDown(t) { t.out.scrollTop = t.out.scrollHeight; }
+  function printCommand(t, command) {
+    t.out.appendChild(el("div", { class: "term-line term-cmd" },
+      el("span", { class: "term-prompt", text: shortCwd(t.cwd) + " $" }),
       el("span", { class: "term-cmd-text", text: " " + command }),
     ));
-    scrollDown();
+    scrollDown(t);
   }
-  function printOutput(text, ok) {
-    const t = (text || "").replace(/\s+$/, "");
-    if (!t) return;
-    out.appendChild(el("pre", { class: "term-line term-result" + (ok ? "" : " err"), text: t }));
-    scrollDown();
+  function printOutput(t, text, ok) {
+    const s = (text || "").replace(/\s+$/, "");
+    if (!s) return;
+    t.out.appendChild(el("pre", { class: "term-line term-result" + (ok ? "" : " err"), text: s }));
+    scrollDown(t);
   }
   // A guidance note (interactive-command hint) — softer than an error.
-  function printHint(text) {
-    out.appendChild(el("pre", { class: "term-line term-result term-hint", text }));
-    scrollDown();
+  function printHint(t, text) {
+    t.out.appendChild(el("pre", { class: "term-line term-result term-hint", text }));
+    scrollDown(t);
   }
 
   // ---- history menu (newest-first, same look as the slash commands) ----
@@ -163,26 +215,39 @@ export function createTerminalPage({ onRun }) {
   function autoSize() {
     input.style.height = "auto";
     input.style.height = Math.min(input.scrollHeight, 160) + "px";
+    // Same behaviour as the chat composer: once the text grows past one line,
+    // the Run button hugs the bottom instead of floating vertically centered.
+    const cs = getComputedStyle(input);
+    let line = parseFloat(cs.lineHeight);
+    if (!line) line = parseFloat(cs.fontSize) * 1.4;
+    const padV = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+    const lines = Math.round((input.scrollHeight - padV) / line);
+    bar.classList.toggle("multiline", lines > 1);
   }
 
   async function run() {
     if (running) return;
+    const t = terms[cur];                     // pin the tab: output lands here even if the user switches away
+    if (!t) return;
     const command = input.value.trim();
     if (!command) return;
     closeMenu();
     input.value = "";
     autoSize();
     remember(command);
-    printCommand(command);
+    printCommand(t, command);
     // Interactive programs can't run in a non-TTY shell — hint instead of hanging.
     const hint = interactiveHint(command);
-    if (hint) { printHint(hint); input.focus(); return; }
+    if (hint) { printHint(t, hint); input.focus(); return; }
     running = true; runBtn.disabled = true;
     let r = null;
-    try { r = await onRun(command, cwd); } catch { r = null; }
+    try { r = await onRun(command, t.cwd); } catch { r = null; }
     running = false; runBtn.disabled = false;
-    if (r && typeof r.cwd === "string") setCwd(r.cwd);
-    printOutput(r ? r.output : "(failed to run)", !!(r && r.ok));
+    if (r && typeof r.cwd === "string") {
+      t.cwd = r.cwd;
+      if (terms[cur] === t) pathEl.textContent = t.cwd || "(default folder)";
+    }
+    printOutput(t, r ? r.output : "(failed to run)", !!(r && r.ok));
     input.focus();
   }
 

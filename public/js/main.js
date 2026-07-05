@@ -19,11 +19,12 @@ import { createAppearanceMenu } from "./components/AppearanceMenu.js";
 import { createMessageList } from "./components/MessageList.js";
 import { createDock } from "./components/Dock.js";
 import { createComposer } from "./components/Composer.js";
+import { maybeShowGuide, showGuide } from "./components/Guide.js";
 
 const THEME_KEY = "ra-theme";
 const ACCENT_KEY = "ra-accent";
 
-const store = createStore({ sessions: [], activeId: null, activeSession: null, agents: [], agentId: "claude", controls: {}, busyIds: {}, queued: {}, unreadIds: {}, autoAllow: !!localStorage.getItem("ra-auto-allow"), files: { received: [], uploaded: [] }, allFiles: [], power: { platform: "", keepAwake: false } });
+const store = createStore({ sessions: [], activeId: null, activeSession: null, agents: [], agentId: "claude", controls: {}, busyIds: {}, queued: {}, unreadIds: {}, autoAllow: !!localStorage.getItem("ra-auto-allow"), files: { received: [], uploaded: [] }, allFiles: [], power: { platform: "", keepAwake: false }, autostart: { supported: false, on: false } });
 const emitter = createEmitter();
 const controller = createChatController({ api, store, emitter });
 
@@ -31,9 +32,10 @@ const controller = createChatController({ api, store, emitter });
 // New chat: pick/create a project folder first (start browsing from the current
 // chat's folder), then create the chat there. The per-project + skips the modal.
 function newChatWithPicker() {
-  document.body.classList.remove("nav-open");
+  // Keep the sidebar where it is; it only closes once a folder is actually
+  // picked and the new chat opens (cancelling leaves everything untouched).
   const start = store.get().activeSession?.effectiveCwd || "";
-  folderPicker.open((cwd) => controller.newSession(cwd), start);
+  folderPicker.open((cwd) => { document.body.classList.remove("nav-open"); controller.newSession(cwd); }, start);
 }
 const sidebar = createSidebar({
   onNew: newChatWithPicker,
@@ -41,8 +43,6 @@ const sidebar = createSidebar({
   onSelect: (id) => { document.body.classList.remove("nav-open"); controller.openSession(id); },
   onDelete: (id) => controller.deleteSession(id),
   onOpenFiles: () => filesPage.open(),
-  onConnections: () => endpointMenu.open(),
-  onDeviceMenu: () => deviceMenu.open(),
   onAppearance: () => appearanceMenu.open(),
 });
 const topbar = createTopbar({ onMenu: () => document.body.classList.toggle("nav-open") });
@@ -62,20 +62,82 @@ const terminalPage = createTerminalPage({ // full-screen shell, opened from the 
   onRun: (command, cwd) => controller.execTerm(command, cwd),
 });
 const endpointMenu = createEndpointMenu({ fetchEndpoints: () => api.endpoints() }); // connection switcher
-const deviceMenu = createDeviceMenu({ // lock screen / turn off screen / keep awake
+const deviceMenu = createDeviceMenu({ // lock screen / turn off screen / keep awake / start at login / shut down
   onLock: () => controller.lockScreen(),
   onScreenOff: () => controller.screenOff(),
+  onShutdown: () => controller.shutdownComputer(),
   onToggleKeepAwake: (on) => controller.setKeepAwake(on),
   getKeepAwake: () => store.get().power.keepAwake,
+  onToggleAutostart: (on) => controller.setAutostart(on),
+  getAutostart: () => store.get().autostart,
 });
-const appearanceMenu = createAppearanceMenu({ // markdown formatting + theme + accent color
+const appearanceMenu = createAppearanceMenu({ // connection/device rows + formatting + theme + accent
   getTheme: () => document.body.dataset.theme,
   onSetTheme: (t) => applyTheme(t),
-  getAccent: () => localStorage.getItem(ACCENT_KEY) || "#6d5cf0",
+  getAccent: () => localStorage.getItem(ACCENT_KEY) || "#3b82f6",
   onSetAccent: (hex) => applyAccent(hex),
   getFormat: () => localStorage.getItem("ra-markdown") !== "0",
   onToggleFormat: (on) => messageList.setMarkdown(on),
+  renderConnections: (c) => endpointMenu.render(c),
+  renderDevice: (c) => deviceMenu.render(c),
+  onShowGuide: () => showGuide(guideSteps(), { onEnd: () => appearanceMenu.close() }),
 });
+
+// ---- guided tour ----
+// Steps navigate the real UI: the settings panel opens, tabs switch, and each
+// device row is spotlit and explained on its own.
+const devRow = (n) => () => appearanceMenu.panel.querySelectorAll(".dev-row")[n];
+function guideSteps() {
+  return [
+    {
+      before: () => appearanceMenu.close(),
+      target: () => sidebar.el.querySelectorAll(".side-files-btn")[0],
+      title: "Select a project",
+      body: "Every chat runs inside a project folder on your computer. Tap here to pick (or create) the folder the agent should work in, then start chatting.",
+    },
+    {
+      // The switch lives in the model picker's popover (tap the model name in
+      // the topbar) — the drawer closes so the topbar is visible.
+      before: () => { document.body.classList.remove("nav-open"); picker.open(); },
+      target: () => picker.el.querySelector(".switch-row"),
+      title: "Allow always",
+      body: "When this is on, the agent's permission requests (running commands, editing files) are approved automatically — smooth, hands-off runs. Turn it off to review and answer each request yourself.",
+    },
+    {
+      before: () => { picker.close(); appearanceMenu.openTab("connection"); },
+      target: () => appearanceMenu.panel.querySelector(".set-content"),
+      title: "Connection",
+      body: "These are the ways your phone can reach this computer — same Wi-Fi, Tailscale, or Cloudflare. Tap one to switch whenever your network changes.",
+    },
+    {
+      before: () => appearanceMenu.openTab("device"),
+      target: devRow(0),
+      title: "Lock screen",
+      body: "Locks your computer's screen remotely, so no one at the desk can see or touch your session.",
+    },
+    {
+      target: devRow(1),
+      title: "Turn off screen",
+      body: "Switches the computer's display off — the machine keeps running, the screen just goes dark.",
+    },
+    {
+      target: devRow(2),
+      title: "Keep awake",
+      body: "Stops the computer from going to sleep while you work remotely — turn it on before stepping away.",
+    },
+    {
+      target: devRow(3),
+      optional: true, // hidden on OSes the gateway can't register itself on
+      title: "Start with computer",
+      body: "Launches the gateway automatically when the computer starts, so the app always has something to connect to.",
+    },
+    {
+      target: () => appearanceMenu.panel.querySelector(".dev-danger"),
+      title: "Shut down computer",
+      body: "Powers the computer off completely. It takes two taps — the first arms the row (\"Tap again to confirm\"), the second shuts down — so a stray touch can't turn your machine off.",
+    },
+  ];
+}
 
 const messageList = createMessageList();
 const dock = createDock({
@@ -89,11 +151,20 @@ const composer = createComposer({
   onStop: () => controller.stopActive(),
   onCancelQueued: () => controller.cancelQueued(),
   onOpenTerminal: () => terminalPage.open(store.get().activeSession?.effectiveCwd || ""),
+  // Eager attachment uploads: start on pick (progress ring on the card), undo
+  // on remove — the upload belongs to whichever session the file was picked in.
+  onUpload: (a, onProgress) => api.uploadProgress(a.name, a.dataBase64, store.get().activeId || "", onProgress),
+  onRemoveUpload: (up) => controller.removeUpload(up),
 });
 
 const backdrop = el("div", { id: "backdrop", onClick: () => document.body.classList.remove("nav-open") });
 const main = el("main", { id: "main" }, topbar.el, messageList.el, dock.el, composer.el);
 document.getElementById("app").append(sidebar.el, main, backdrop);
+
+// Running inside the native app shell (its WebView tags the user agent): the
+// shell already pads for the system bars, so trim our own safe-area padding.
+// Old installs still say ZogagApp — keep matching both.
+if (/WakiliApp|ZogagApp/i.test(navigator.userAgent)) document.documentElement.classList.add("native-app");
 
 // ---- theme + accent ----
 function applyTheme(t) {
@@ -188,7 +259,7 @@ store.subscribe((s) => {
     uiSid = s.activeId;
     composer.setState(uiState.get(uiSid));
   }
-  sidebar.render({ sessions: s.sessions, activeId: s.activeId, busyIds: s.busyIds, files: s.allFiles, unreadIds: s.unreadIds, power: s.power });
+  sidebar.render({ sessions: s.sessions, activeId: s.activeId, busyIds: s.busyIds, files: s.allFiles, unreadIds: s.unreadIds, agents: s.agents, power: s.power });
   filesPage.render(s.allFiles);
   composer.setBusy(!!s.busyIds[s.activeId]);   // only the active session's busy gates the composer
   composer.setQueued(s.queued[s.activeId]);    // its pending (queued) message, if any
@@ -210,7 +281,7 @@ store.subscribe((s) => {
 function showGate() {
   document.body.appendChild(el("div", { class: "lg-overlay" },
     el("div", { class: "lg-form" },
-      el("div", { class: "lg-title", text: "Remote Agent" }),
+      el("div", { class: "lg-title", text: "Wakili" }),
       el("div", { class: "lg-sub", text: "Open this page from the link or QR code shown in your computer's terminal — it carries your access token." }),
     )));
 }
@@ -221,5 +292,7 @@ async function boot() {
   if (!api.hasToken()) return showGate();
   try { await controller.init(); }
   catch (e) { if (String(e.message || e).includes("unauthorized")) showGate(); else throw e; }
+  // First visit only: a short tour of the essentials.
+  maybeShowGuide(guideSteps(), { onEnd: () => appearanceMenu.close() });
 }
 boot();

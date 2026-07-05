@@ -264,6 +264,7 @@ export function createChatController({ api, store, emitter }) {
     const wasActive = store.get().activeId === id;
     sessionCache.delete(id);
     outbox.delete(id);
+    sendChain.delete(id);
     store.set((s) => { const u = { ...s.unreadIds }; delete u[id]; return { unreadIds: u }; });
     await api.deleteSession(id);
     await refreshSessions();
@@ -297,15 +298,22 @@ export function createChatController({ api, store, emitter }) {
     emitter.emit("toast", msg);
   }
 
-  // Upload attachments, then post the turn. Kept re-runnable so Retry works.
+  // Post the turn once its attachments are on the laptop. Attachments picked in
+  // the composer are usually already uploaded (eagerly, on pick) or in flight —
+  // use/await that result. Anything without one (a failed eager upload, a
+  // Retry) uploads here. Kept re-runnable so Retry works.
   async function transmit(entry) {
     const id = entry.sessionId;
     entry.status = "sending";
     if (entry.handle) entry.handle.update("sending");
     const attachments = [];
     for (const a of entry.raw) {
-      let up = null;
-      try { up = await api.upload(a.name, a.dataBase64, id); } catch { up = null; }
+      let up = a.up || null;
+      if (!up && a.promise) up = await a.promise.catch(() => null); // eager upload still in flight
+      if (!up || !up.path) {
+        try { up = await api.upload(a.name, a.dataBase64, id); } catch { up = null; }
+        if (up && up.path) a.up = up; // remember, so another Retry won't re-upload
+      }
       if (!up || !up.path) return failOutbox(entry, `Couldn't upload ${a.name} — tap Retry`);
       attachments.push({ name: up.name, path: up.path, url: up.url || "" });
     }
@@ -324,16 +332,26 @@ export function createChatController({ api, store, emitter }) {
     if (entry.handle) entry.handle.update("sent");
   }
 
+  // FIFO per session: every send (its uploads included) waits for the previous
+  // one, so a quick second message can never overtake a first one whose file is
+  // still uploading — order on the wire is the order the user sent.
+  const sendChain = new Map(); // sessionId -> tail promise of the send queue
+  function enqueueSend(id, fn) {
+    const tail = (sendChain.get(id) || Promise.resolve()).then(fn).catch(() => {});
+    sendChain.set(id, tail);
+    return tail;
+  }
+
   // Deliver one turn to a specific session through its outbox.
   function deliver(id, text, raw, controls, agentId) {
     const entry = { key: ++outboxSeq, sessionId: id, text, raw: raw || [], controls, agentId, status: "sending", handle: null };
     if (!outbox.has(id)) outbox.set(id, []);
     outbox.get(id).push(entry);
     if (store.get().activeId === id) emitter.emit("outbox", entry); // render now; main.js sets entry.handle
-    return transmit(entry);
+    return enqueueSend(id, () => transmit(entry));
   }
 
-  const retryOutbox = (entry) => { if (entry.status === "failed") transmit(entry); };
+  const retryOutbox = (entry) => { if (entry.status === "failed") enqueueSend(entry.sessionId, () => transmit(entry)); };
   const discardOutbox = (entry) => { removeOutbox(entry); if (entry.handle) entry.handle.remove(); };
 
   // Composer send. If the active session is busy, queue the message (Claude-Code
@@ -365,19 +383,23 @@ export function createChatController({ api, store, emitter }) {
     // "!cmd" → direct shell command, straight to the server (skips agent + queue).
     if (text && text[0] === "!" && text.slice(1).trim()) return runExec(st.activeId, text.slice(1).trim());
     if (st.busyIds[st.activeId]) {
+      // Queue is a list: each queued message goes out (one per turn end) in
+      // order — sending twice mid-turn no longer overwrites the first message.
       const q = { text, raw, controls: st.controls, agentId: st.agentId };
-      store.set((s) => ({ queued: { ...s.queued, [st.activeId]: q } }));
+      store.set((s) => ({ queued: { ...s.queued, [st.activeId]: [...(s.queued[st.activeId] || []), q] } }));
       emitter.emit("queued", q);
       return;
     }
     await deliver(st.activeId, text, raw, st.controls, st.agentId);
   }
 
-  // Send a session's queued message (if any) now that it's free.
+  // Send a session's oldest queued message (if any) now that it's free; the
+  // rest stay queued and follow, one per turn end.
   function flushQueued(id) {
-    const q = store.get().queued[id];
-    if (!q) return;
-    store.set((s) => { const next = { ...s.queued }; delete next[id]; return { queued: next }; });
+    const list = store.get().queued[id];
+    if (!list || !list.length) return;
+    const [q, ...rest] = list;
+    store.set((s) => { const next = { ...s.queued }; if (rest.length) next[id] = rest; else delete next[id]; return { queued: next }; });
     deliver(id, q.text, q.raw, q.controls, q.agentId);
   }
 
@@ -448,7 +470,20 @@ export function createChatController({ api, store, emitter }) {
   async function refreshPower() { try { store.set({ power: await api.power() }); } catch { /* ignore */ } }
   async function lockScreen() { return api.lockScreen(); }
   async function screenOff() { return api.screenOff(); }
+  async function shutdownComputer() { return api.shutdown(); }
   async function setKeepAwake(on) { try { const p = await api.keepAwake(on); store.set({ power: p }); return p; } catch { return null; } }
+
+  // Start-at-login: the gateway registers itself with the OS's per-user
+  // autostart mechanism, so this setting lives on the laptop, not the phone.
+  async function refreshAutostart() { try { store.set({ autostart: await api.autostart() }); } catch { /* ignore */ } }
+  async function setAutostart(on) { try { const a = await api.setAutostart(on); store.set({ autostart: a }); return a; } catch { return null; } }
+
+  // Undo an eager upload: the user removed the attachment before sending, so
+  // delete the file from the laptop and drop it from the sidebar files list.
+  async function removeUpload(up) {
+    try { await api.deleteUpload(up.path); } catch { /* best effort */ }
+    refreshFiles();
+  }
   async function setCwd(cwd) {
     const id = store.get().activeId;
     if (!id) return;
@@ -462,8 +497,14 @@ export function createChatController({ api, store, emitter }) {
     await refreshSessions();
     refreshFiles();
     refreshPower();
+    refreshAutostart();
     const list = store.get().sessions;
-    if (list.length) await openSession(list[0].id);
+    // The sidebar's refresh button stashes the open session before reloading;
+    // honor it so a refresh lands back in the same chat, not the newest one.
+    let resume = null;
+    try { resume = sessionStorage.getItem("ra-resume-sid"); sessionStorage.removeItem("ra-resume-sid"); } catch { /* private mode */ }
+    if (resume && list.some((s) => s.id === resume)) await openSession(resume);
+    else if (list.length) await openSession(list[0].id);
     else await newSession();
     // Light poll as a safety net (authoritative busy/pending counts, titles);
     // the live stream handles moment-to-moment updates.
@@ -477,5 +518,5 @@ export function createChatController({ api, store, emitter }) {
     }, 6000);
   }
 
-  return { init, openSession, newSession, deleteSession, send, execTerm, stopActive, cancelQueued, setControl, setAutoAllow, setAgent, pickModel, answerPermission, answerQuestion, browseFolders, createFolder, setCwd, lockScreen, screenOff, setKeepAwake, getOutbox, retryOutbox, discardOutbox };
+  return { init, openSession, newSession, deleteSession, send, execTerm, stopActive, cancelQueued, setControl, setAutoAllow, setAgent, pickModel, answerPermission, answerQuestion, browseFolders, createFolder, setCwd, lockScreen, screenOff, shutdownComputer, setKeepAwake, setAutostart, removeUpload, getOutbox, retryOutbox, discardOutbox };
 }

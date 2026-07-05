@@ -1,6 +1,8 @@
 // Reusable composer: attach button, auto-growing textarea, send button.
-// Holds pending attachments (read to base64) until send. Enter sends,
-// Shift+Enter newline. Emits (text, attachments) via onSend.
+// Attachments upload EAGERLY: the moment a file is picked it starts uploading
+// (progress ring on its card) so the transfer runs while the user types; send
+// is never gated on it — the outbox waits for in-flight uploads. Removing a
+// card cancels/undoes its upload. Emits (text, attachments) via onSend.
 //
 // Slash commands: when the text is a single "/token" (no space yet), a menu of
 // the agent's real commands pops above the bar — like the Claude CLI. ↑/↓ move,
@@ -8,11 +10,13 @@
 // args (or just press Enter) — the command is then sent to the agent like any turn.
 // The command list comes from the backend per agent; setCommands() swaps it.
 
-import { el } from "./dom.js";
+import { el, dismissFirst } from "./dom.js";
 import { icon } from "./icons.js";
 
-export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal, commands = [] }) {
-  let pending = []; // [{ name, dataBase64, dataUrl, isImg }]
+export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal, onUpload, onRemoveUpload, commands = [] }) {
+  // [{ name, dataBase64, dataUrl, isImg, status, progress, up, promise }]
+  // status: "uploading" | "done" | "failed"; up = { path, name, url } once done.
+  let pending = [];
   let items = [];   // commands currently shown in the menu
   let active = 0;   // highlighted index
   let menuOpen = false;
@@ -58,18 +62,59 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
     send.replaceChildren(icon(stop ? "square" : "arrow-up"));
     send.setAttribute("aria-label", stop ? "Stop" : "Send");
     send.disabled = blocked;
+    // The + menu is also parked while a card awaits an answer — attaching files
+    // or opening the terminal mid-permission would race the pending decision.
+    attachBtn.disabled = blocked;
+    if (blocked) closeAddMenu();
     root.classList.toggle("blocked", blocked);
   }
+  // Eager upload: start the transfer the moment the file is picked, so it runs
+  // while the user types. The result lands on the item (a.up); the outbox uses
+  // it — or awaits a.promise — instead of re-uploading at send time. Without an
+  // onUpload prop the item is left alone and uploads at send, as before.
+  function startUpload(a) {
+    if (!onUpload) { a.status = "done"; return; }
+    a.status = "uploading"; a.progress = 0; a.up = null;
+    const t = onUpload(a, (p) => { a.progress = p; if (a._ring) a._ring.style.setProperty("--p", String(p)); });
+    a._abort = t && t.abort;
+    a.promise = (t ? t.promise : Promise.reject(new Error("no uploader")))
+      .then((up) => { a.up = up && up.path ? up : null; a.status = a.up ? "done" : "failed"; renderChips(); return a.up; })
+      .catch(() => { a.status = "failed"; renderChips(); return null; });
+  }
+
+  // The card's status layer: a progress ring while uploading, tap-to-retry when
+  // the upload failed, nothing once it's done (the ring simply disappears).
+  function attOverlay(a) {
+    if (a.status === "uploading") {
+      a._ring = el("div", { class: "att-ring" });
+      a._ring.style.setProperty("--p", String(a.progress || 0));
+      return el("div", { class: "att-overlay" }, a._ring);
+    }
+    if (a.status === "failed") {
+      return el("div", { class: "att-overlay" },
+        el("button", { class: "att-retry", type: "button", title: "Upload failed — tap to retry",
+          onClick: (e) => { e.preventDefault(); startUpload(a); renderChips(); } }, "↻"));
+    }
+    return null;
+  }
+
   // Pending attachments preview: 1:1 cards flowing from the top-left. Images fill
   // the card (no name); files show an icon top-left + a 2-line-max name at the
-  // bottom. The × at the top-right removes the attachment.
+  // bottom. The × at the top-right removes the attachment (cancelling or undoing
+  // its upload so nothing is left behind on the laptop).
   function renderChips() {
     chips.innerHTML = "";
     pending.forEach((a, i) => {
-      const remove = el("button", { class: "att-x", type: "button", "aria-label": "Remove", onClick: () => { pending.splice(i, 1); renderChips(); } }, icon("x"));
+      const remove = el("button", { class: "att-x", type: "button", "aria-label": "Remove", onClick: () => {
+        if (a.status === "uploading" && a._abort) { try { a._abort(); } catch { /* already settled */ } }
+        if (a.up && onRemoveUpload) onRemoveUpload(a.up);
+        pending.splice(i, 1); renderChips();
+      } }, icon("x"));
       const card = el("div", { class: "att-card" + (a.isImg ? " img" : ""), title: a.name });
       if (a.isImg) card.appendChild(el("img", { src: a.dataUrl, alt: a.name }));
       else card.append(icon("paperclip", "att-ico"), el("div", { class: "att-name", text: a.name }));
+      const overlay = attOverlay(a);
+      if (overlay) card.appendChild(overlay);
       card.appendChild(remove);
       chips.appendChild(card);
     });
@@ -149,7 +194,9 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
       const reader = new FileReader();
       reader.onload = () => {
         const dataUrl = String(reader.result);
-        pending.push({ name: file.name, dataBase64: dataUrl.split(",")[1], dataUrl, isImg });
+        const a = { name: file.name, dataBase64: dataUrl.split(",")[1], dataUrl, isImg };
+        pending.push(a);
+        startUpload(a); // eager: the transfer runs while the user types
         renderChips();
       };
       reader.readAsDataURL(file);
@@ -180,9 +227,14 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
   });
   document.addEventListener("click", (e) => {
     if (!root.contains(e.target) && menuOpen) closeMenu();
-    // The + menu dismisses on ANY tap outside itself (the + button toggles it).
-    if (!addMenu.contains(e.target) && !attachBtn.contains(e.target)) closeAddMenu();
   });
+  // The + menu closes on a tap outside itself, and that tap does nothing else —
+  // dismissing is its own gesture (same as the sidebar filter and model picker).
+  dismissFirst(
+    () => !addMenu.hasAttribute("hidden"),
+    (t) => addMenu.contains(t) || attachBtn.contains(t),
+    closeAddMenu,
+  );
 
   return {
     el: root,
@@ -190,11 +242,15 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
     setBusy: (b) => { busy = !!b; refreshButton(); },
     // Block sending while a permission / question card awaits an answer.
     setBlocked: (b) => { blocked = !!b; refreshButton(); },
-    // Show/clear the "queued" chip for the active session's pending message.
-    setQueued: (q) => {
+    // Show/clear the "queued" chip for the active session's pending messages
+    // (a list now — the first is shown, the rest counted; × cancels them all).
+    setQueued: (list) => {
       queued.innerHTML = "";
+      const arr = Array.isArray(list) ? list : (list ? [list] : []);
+      const q = arr[0];
       if (q && (q.text || (q.raw && q.raw.length))) {
-        const label = q.text || (q.raw || []).map((a) => a.name).join(", ");
+        let label = q.text || (q.raw || []).map((a) => a.name).join(", ");
+        if (arr.length > 1) label += `  (+${arr.length - 1} more)`;
         queued.append(
           icon("clock"),
           el("span", { class: "queued-label", text: "Queued: " + label }),

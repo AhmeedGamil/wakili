@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="sessions_title">Chats</string>
+    <string name="sessions_disconnect">Disconnect</string>
+    <string name="sessions_settings">Settings</string>
+    <string name="sessions_files">Files</string>
+    <string name="sessions_select_project">Select project</string>
+    <string name="sessions_error">Couldn\'t load your chats.</string>
+    <string name="sessions_retry">Try again</string>
+    <string name="sessions_empty">No chats yet — this screen fills up in the next phase.</string>
+    <string name="sessions_untitled">New chat</string>
+    <string name="sessions_view_all">All chats</string>
+    <string name="sessions_view_project">By project</string>
+    <string name="sessions_edit">Edit chat</string>
+    <string name="sessions_rename">Rename</string>
+    <string name="sessions_delete">Delete</string>
+    <string name="sessions_pick_project">Select project folder</string>
+    <string name="sessions_roots">Drives &amp; home</string>
+    <string name="sessions_new_folder">New folder name</string>
+    <string name="sessions_create">Create</string>
+    <string name="sessions_use_folder">Use this folder</string>
+    <string name="sessions_stream_down">Live updates disconnected — if this persists, restart the gateway on your computer.</string>
+</resources>

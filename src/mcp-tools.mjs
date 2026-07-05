@@ -7,9 +7,9 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 
-const SESSION = process.env.REMOTE_AGENT_SESSION || "";
-const GATEWAY = process.env.REMOTE_AGENT_GATEWAY || "http://127.0.0.1:8730";
-const TOKEN = process.env.REMOTE_AGENT_TOKEN || "";
+const SESSION = process.env.WAKILI_SESSION || "";
+const GATEWAY = process.env.WAKILI_GATEWAY || "http://127.0.0.1:8730";
+const TOKEN = process.env.WAKILI_TOKEN || "";
 
 const send = (msg) => process.stdout.write(JSON.stringify(msg) + "\n");
 
@@ -82,7 +82,7 @@ function handle(msg) {
       result: {
         protocolVersion: params?.protocolVersion || "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "remote-agent", version: "1.0.0" },
+        serverInfo: { name: "wakili", version: "1.0.0" },
       },
     });
   } else if (method === "tools/list") {
@@ -134,7 +134,16 @@ function postJson(url, body, timeoutMs) {
     const u = new URL(url);
     const req = http.request(
       { hostname: u.hostname, port: u.port, path: u.pathname, method: "POST", headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body), "x-auth-token": TOKEN } },
-      (res) => { let b = ""; res.on("data", (c) => (b += c)); res.on("end", () => { try { resolve(JSON.parse(b)); } catch { resolve({}); } }); }
+      (res) => {
+        let b = "";
+        res.on("data", (c) => (b += c));
+        res.on("end", () => {
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            return reject(new Error(`gateway responded ${res.statusCode}: ${b.slice(0, 200)}`));
+          }
+          try { resolve(JSON.parse(b)); } catch { resolve({}); }
+        });
+      }
     );
     req.on("error", reject);
     if (timeoutMs) req.setTimeout(timeoutMs, () => { req.destroy(new Error("timed out waiting for answer")); });

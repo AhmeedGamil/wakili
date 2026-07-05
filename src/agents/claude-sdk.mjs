@@ -89,7 +89,7 @@ export const claudeSdkAgent = {
           mcpServers: {
             remoteagent: {
               type: "stdio", command: "node", args: [MCP_SERVER],
-              env: { ...process.env, REMOTE_AGENT_SESSION: sessionId, REMOTE_AGENT_GATEWAY: gatewayUrl, REMOTE_AGENT_TOKEN: config.token },
+              env: { ...process.env, WAKILI_SESSION: sessionId, WAKILI_GATEWAY: gatewayUrl, WAKILI_TOKEN: config.token },
             },
           },
           canUseTool: async (toolName, input) => {

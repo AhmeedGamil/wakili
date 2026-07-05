@@ -5,23 +5,35 @@
 }
 [data-theme="dark"] {
   --bg: #18181b; --panel: #242428; --panel-2: #303036; --text: #ececec;
-  --muted: #9a9aa3; --border: #34343a; --accent: #7c6cf0; --accent-ink: #fff;
+  --muted: #9a9aa3; --border: #34343a; --accent: #3b82f6; --accent-ink: #fff;
   --user: #303036; --hover: #2a2a2f; --pill: #2a2a30;
 }
 [data-theme="light"] {
   --bg: #ffffff; --panel: #f7f7f8; --panel-2: #ececf0; --text: #1d1d22;
-  --muted: #6a6a74; --border: #e6e6ec; --accent: #6d5cf0; --accent-ink: #fff;
+  --muted: #6a6a74; --border: #e6e6ec; --accent: #3b82f6; --accent-ink: #fff;
   --user: #f0f0f4; --hover: #f1f1f4; --pill: #f4f4f6;
 }
 
-* { box-sizing: border-box; }
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+/* the document itself never scrolls (only inner panes do) — without this, the
+   browser scrolls the page to reveal a focused input and drags the topbar up */
 html, body { height: 100%; }
+/* Native app only: lock the document so it can't scroll (keeps the topbar from
+   being dragged up on keyboard focus). In a browser the root stays scrollable
+   so pull-to-refresh works — the interactive-widget viewport meta handles the
+   keyboard there. */
+.native-app, .native-app body { overflow: hidden; }
 body {
   margin: 0; background: var(--bg); color: var(--text);
   font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
   overflow-x: hidden;
 }
+/* Only the native app suppresses overscroll (it has its own refresh button in
+   the sidebar). In a browser the default stays, so pulling down from the top
+   of the chat still triggers the browser's pull-to-refresh. */
+.native-app body { overscroll-behavior: none; }
+.native-app .messages { overscroll-behavior: none; }
 #app { display: grid; grid-template-columns: var(--sidebar-w) 1fr; height: 100dvh; }
 
 /* nicer scrollbars */
@@ -29,10 +41,27 @@ body {
 *::-webkit-scrollbar { width: 8px; height: 8px; }
 *::-webkit-scrollbar-thumb { background: var(--panel-2); border-radius: 8px; }
 *::-webkit-scrollbar-thumb:hover { background: var(--border); }
+/* floating menus/popovers scroll without a visible scrollbar — in the app's
+   WebView the bar takes layout width, so its appearance made list items shrink
+   and shift sideways */
+.picker-pop, .dd-menu, .sess-pop, .add-menu, .slash-menu { scrollbar-width: none; }
+.picker-pop::-webkit-scrollbar, .dd-menu::-webkit-scrollbar, .sess-pop::-webkit-scrollbar, .add-menu::-webkit-scrollbar, .slash-menu::-webkit-scrollbar { display: none; }
 
 /* ---- sidebar ---- */
 #sidebar { display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--border); min-height: 0; }
-.side-head { padding: 12px; }
+.side-brand { display: flex; align-items: center; gap: 10px; padding: 14px 15px 12px; }
+/* the logo is painted with the live accent: logo-mask.png (the glyph on real
+   transparency — icon-192 is flattened on white, which masks to a full square)
+   is used as an alpha mask over an accent-colored box, so picking a new accent
+   recolors it too */
+.brand-logo {
+  width: 28px; height: 28px; display: block; background: var(--accent);
+  -webkit-mask-image: url(/icons/logo-mask.png); mask-image: url(/icons/logo-mask.png);
+  -webkit-mask-size: contain; mask-size: contain;
+  -webkit-mask-position: center; mask-position: center;
+  -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat;
+}
+.brand-name { font-size: 16px; font-weight: 700; letter-spacing: .01em; }
 /* device controls list (inside the Device menu) */
 .dev-list { display: flex; flex-direction: column; gap: 2px; padding: 8px; }
 .dev-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 10px; border-radius: 10px; cursor: pointer; }
@@ -44,6 +73,14 @@ body {
 .switch:disabled { cursor: default; }
 .sw-knob { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: transform .15s ease; }
 .switch.on .sw-knob { transform: translateX(16px); }
+/* one-shot action rows (Lock screen / Turn off screen): idle chevron, then inline status */
+.dev-status { display: inline-flex; align-items: center; flex: none; color: var(--muted); }
+.dev-note { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; white-space: nowrap; }
+.dev-note.run { animation: pulse 1.1s ease infinite; }
+.dev-note.ok { color: var(--accent); }
+.dev-note.err { color: #ef4444; }
+/* shutdown row: red-tinted while armed, waiting for the confirming tap */
+.dev-row.dev-danger.armed { background: rgba(239, 68, 68, .12); }
 
 /* appearance menu: theme segment + accent swatches */
 .appr-body { padding: 4px 14px 18px; }
@@ -56,10 +93,6 @@ body {
 .swatch:hover { transform: scale(1.12); }
 .swatch.on { box-shadow: 0 0 0 2px var(--panel), 0 0 0 4px var(--text); }
 
-.side-foot { display: flex; align-items: center; gap: 6px; padding: 10px 8px; border-top: 1px solid var(--border); }
-.side-foot .btn.ghost { font-size: 13.5px; flex: 1; min-width: 0; gap: 6px; padding: 9px 3px; }
-.side-foot .btn.ghost .ico svg { width: 1.35em; height: 1.35em; }
-.side-foot .btn.ghost span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* connection switcher (LAN / Tailscale / Cloudflare) */
 .ep-panel { width: 440px; }
@@ -87,11 +120,12 @@ body {
 .sf-file:hover { background: var(--hover); }
 .sf-empty { font-size: 12px; color: var(--muted); padding: 4px 8px 8px; }
 .session-list { flex: 1; overflow-y: auto; padding: 4px 8px; min-height: 0; }
-.group-head { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); padding: 16px 11px 10px; }
+.group-head { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--text); padding: 16px 11px 10px; }
 .group-head:first-child { padding-top: 8px; }
+.group-head .group-ico { flex: none; color: var(--text); }
 .group-label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.group-add { flex: none; background: none; border: 0; cursor: pointer; color: var(--muted); font-size: 18px; line-height: 1; padding: 3px 6px; border-radius: 8px; }
-.group-add:hover { color: var(--text); background: var(--hover); }
+.group-add { flex: none; background: none; border: 0; cursor: pointer; color: var(--text); font-size: 18px; line-height: 1; padding: 3px 6px; border-radius: 8px; }
+.group-add:hover { background: var(--hover); }
 
 /* session row: optional folder badge under the title (flat "All chats" view) */
 .s-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
@@ -99,17 +133,51 @@ body {
 .s-badge { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* Files entry + session-view toggle in the sidebar */
-.side-files-btn { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 12px 6px; padding: 9px 11px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; cursor: pointer; font-size: 13px; color: var(--text); }
+/* margin+padding add up to 15px, so icons line up with the brand logo above */
+.side-files-btn { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 8px 2px; padding: 9px 7px; background: var(--panel); border: 0; border-radius: 10px; cursor: pointer; font-size: 14.5px; color: var(--text); }
 .side-files-btn:hover { background: var(--hover); }
-.side-files-count { font-size: 12px; color: var(--muted); background: var(--panel); border-radius: 999px; padding: 1px 8px; }
-.sv-toggle { display: flex; gap: 4px; margin: 0 12px 4px; padding: 3px; background: var(--panel-2); border-radius: 10px; }
-.sv-tab { flex: 1; padding: 6px 8px; border: 0; border-radius: 8px; background: none; color: var(--muted); font-size: 12px; font-weight: 600; cursor: pointer; }
-.sv-tab.on { background: var(--panel); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.18); }
+.side-files-count { font-size: 12px; color: var(--muted); background: var(--panel-2); border-radius: 999px; padding: 1px 8px; }
+/* "Sessions" header + grouping filter popover */
+.sess-head { display: flex; align-items: center; gap: 8px; padding: 12px 10px 4px 15px; position: relative; }
+.sess-title { flex: 1; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.sess-filter { flex: none; display: inline-flex; background: none; border: 0; cursor: pointer; color: var(--muted); padding: 4px 7px; border-radius: 8px; }
+.sess-filter:hover { color: var(--text); background: var(--hover); }
+.sess-filter.spin { color: var(--accent); }
+.sess-filter.spin svg { animation: spin-around .7s linear infinite; }
+@keyframes spin-around { to { transform: rotate(360deg); } }
+.sess-pop { position: absolute; top: 100%; right: 10px; z-index: 60; min-width: 160px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,.4); padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+.sess-pop[hidden] { display: none; }
+.sess-pop button { display: flex; align-items: center; gap: 9px; border: 0; background: none; color: var(--text); font: inherit; font-size: 13px; padding: 8px 10px; border-radius: 8px; cursor: pointer; text-align: left; }
+.sess-pop button:hover { background: var(--hover); }
+.sess-opt { flex: 1; }
+.sess-sep { border-top: 1px solid var(--border); margin: 4px 6px; }
+.sess-check { visibility: hidden; color: var(--accent); }
+.sess-pop button.on .sess-check { visibility: visible; }
+
+/* settings rows that act like the Device rows (e.g. "Show the guide again") */
+.set-row { display: flex; align-items: center; gap: 11px; width: 100%; padding: 11px 10px; background: none; border: 0; border-radius: 10px; color: var(--text); font: inherit; font-size: 14px; cursor: pointer; text-align: left; }
+.set-row:hover { background: var(--hover); }
+.set-row-label { flex: 1; }
+.set-row-go { color: var(--muted); }
+
+/* settings panel: Connection | Device | Other tab bar. The panel keeps ONE
+   height whatever the tab shows, so switching tabs never shifts the window —
+   short content leaves empty space, tall content scrolls inside. */
+.set-panel { height: min(540px, 84vh); }
+.set-tabs { display: flex; gap: 4px; margin: 12px 14px 0; padding: 3px; background: var(--panel-2); border-radius: 10px; flex: none; }
+.set-tab { flex: 1; padding: 8px; border: 0; border-radius: 8px; background: none; color: var(--muted); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+.set-tab.on { background: var(--panel); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.18); }
+.set-content { flex: 1; min-height: 0; overflow-y: auto; }
 
 /* Markdown formatting switch, sitting just above the footer buttons */
 .md-toggle { display: flex; align-items: center; gap: 8px; width: calc(100% - 24px); margin: 4px 12px 8px; padding: 8px 11px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; color: var(--muted); font-size: 12.5px; cursor: pointer; }
 /* Inside the Settings panel the toggle spans the body (no sidebar insets). */
-.appr-body .md-toggle { width: 100%; margin: 0; font-size: 13px; }
+/* in Settings the markdown row matches the Device rows: same flat background,
+   same padding, same 38×22 switch */
+.appr-body .md-toggle { width: 100%; margin: 0; font-size: 14px; background: none; border: 0; padding: 11px 10px; color: var(--text); border-radius: 10px; }
+.appr-body .md-toggle .md-switch { width: 38px; height: 22px; }
+.appr-body .md-toggle .md-switch::after { width: 18px; height: 18px; }
+.appr-body .md-toggle.on .md-switch::after { transform: translateX(16px); }
 .md-toggle:hover { background: var(--hover); }
 .md-toggle.on { color: var(--text); }
 .md-toggle-label { flex: 1; min-width: 0; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -120,9 +188,10 @@ body {
 
 /* read-only folder chip in the topbar */
 .topbar-folder { font-size: 12px; color: var(--muted); background: var(--panel); border: 1px solid var(--border); border-radius: 999px; padding: 4px 11px; max-width: 42vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.session { display: flex; align-items: center; gap: 8px; padding: 9px 11px; border-radius: 10px; cursor: pointer; transition: background .12s ease; }
+.session { display: flex; align-items: center; gap: 8px; padding: 9px 11px; border-radius: 10px; cursor: pointer; transition: background .12s ease; color: color-mix(in srgb, var(--text) 55%, var(--muted)); }
 .session:hover { background: var(--hover); }
-.session.active { background: var(--panel-2); }
+.session.active { background: var(--panel-2); color: var(--text); }
+.s-model { flex: none; max-width: 42%; font-size: 11px; color: var(--muted); background: var(--pill); border-radius: 999px; padding: 1px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .s-title { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 14px; }
 .s-del { opacity: 0; background: none; border: 0; cursor: pointer; font-size: 13px; color: var(--muted); padding: 2px 4px; transition: opacity .12s; }
 .session:hover .s-del { opacity: .65; }
@@ -246,7 +315,8 @@ body {
 .dd-check { color: var(--accent); }
 .picker-pop[hidden] { display: none; }
 /* Allow-always switch row */
-.switch-row { display: flex; align-items: center; gap: 8px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px; padding: 11px 13px; }
+.switch-row { display: flex; align-items: center; gap: 8px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px; padding: 11px 13px; cursor: pointer; }
+.switch-row:hover { background: var(--hover); }
 .switch-label { font-size: 13px; color: var(--muted); }
 .switch { margin-left: auto; position: relative; width: 40px; height: 22px; flex: 0 0 auto; background: var(--border); border: 0; border-radius: 999px; cursor: pointer; padding: 0; transition: background .15s; }
 .switch.on { background: var(--accent); }
@@ -275,6 +345,7 @@ body {
   color: var(--text); opacity: .92; text-align: center;
 }
 .msg { max-width: var(--maxw); margin: 0 auto 18px; width: 100%; }
+.msg[hidden] { display: none; } /* .msg display rules must not override the hidden attribute */
 .msg.user { display: flex; }
 .bubble { margin-left: auto; background: var(--user); padding: 11px 16px; border-radius: 20px; max-width: 85%; white-space: pre-wrap; overflow-wrap: anywhere; }
 .msg.assistant .text { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -426,7 +497,7 @@ body {
 .slash-menu[hidden] { display: none; }
 .slash-item { display: flex; align-items: baseline; gap: 10px; width: 100%; background: none; border: 0; color: var(--text); font: inherit; text-align: left; padding: 10px 12px; border-radius: 12px; cursor: pointer; }
 .slash-item:hover, .slash-item.active { background: var(--hover); }
-.slash-name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; font-weight: 600; color: var(--accent); flex: none; }
+.slash-name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; font-weight: 600; color: var(--text); flex: none; }
 .slash-desc { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* + (add) menu above the composer: Add files / Terminal */
@@ -442,6 +513,23 @@ body {
 .term-panel { padding: 0; }
 .term-head-left { display: flex; align-items: center; gap: 8px; }
 .term-head-left svg { width: 18px; height: 18px; color: var(--accent); }
+/* terminal tabs: one per shell, + to open another, × asks before closing */
+.term-tabs { display: flex; align-items: center; gap: 4px; padding: 6px 10px 0; overflow-x: auto; flex: none; }
+.term-tab { display: inline-flex; align-items: center; gap: 6px; flex: none; border: 1px solid transparent; border-bottom: 0; border-radius: 9px 9px 0 0; background: none; color: var(--muted); font: inherit; font-size: 12.5px; padding: 6px 10px; cursor: pointer; }
+.term-tab.on { background: var(--panel-2); border-color: var(--border); color: var(--text); }
+.term-tab-x { display: inline-flex; border-radius: 6px; padding: 1px; }
+.term-tab-x svg { width: 12px; height: 12px; }
+.term-tab-x:hover { background: var(--hover); color: var(--text); }
+.term-tab-add { padding: 6px 8px; }
+.term-tab-add:hover { color: var(--text); background: var(--hover); border-radius: 9px; }
+.term-confirm { display: flex; align-items: center; gap: 8px; margin: 8px 12px 0; padding: 8px 12px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; font-size: 13px; }
+.term-confirm[hidden] { display: none; }
+.term-confirm-text { flex: 1; }
+.term-confirm .btn { padding: 5px 12px; font-size: 12.5px; }
+.btn.danger { background: #ef4444; border-color: transparent; color: #fff; }
+.btn.danger:hover { filter: brightness(1.08); }
+.term-outwrap { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.term-out[hidden] { display: none; }
 .term-cwd { display: flex; align-items: center; gap: 8px; padding: 8px 16px; border-bottom: 1px solid var(--border); color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 .term-cwd svg { width: 15px; height: 15px; flex: none; }
 .term-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -477,12 +565,15 @@ body {
 .perm-batch .btn { padding: 6px 12px; }
 
 .composer { display: flex; flex-direction: column; gap: 8px; padding: 10px 16px max(16px, env(safe-area-inset-bottom)); max-width: var(--maxw); margin: 0 auto; width: 100%; }
+/* inside the native app the shell already pads for the system bar — keep the
+   composer as tight to the bottom as it is on desktop web */
+.native-app .composer { padding-bottom: 10px; }
 .composer-bar { position: relative; display: flex; gap: 6px; align-items: center; background: var(--panel); border: 1px solid var(--border); border-radius: 26px; padding: 6px; box-shadow: 0 1px 2px rgba(0,0,0,.18); transition: border-color .12s; }
 .composer-bar.multiline { align-items: flex-end; } /* >2 lines: buttons hug the bottom */
 .composer-bar:focus-within { border-color: var(--accent); }
 /* while a permission / question card is up, the composer is disabled */
 .composer.blocked .composer-bar { opacity: .55; }
-.btn.send:disabled { opacity: .5; cursor: default; }
+.btn.send:disabled, .btn.attach:disabled { opacity: .5; cursor: default; }
 /* Pending attachments: 1:1 cards flowing from the top-left of the box. Images
    fill the card; files show an icon (top-left) + a 2-line-max name (bottom). */
 .chips { display: flex; flex-wrap: wrap; justify-content: flex-start; gap: 8px; padding: 2px 6px; }
@@ -493,6 +584,11 @@ body {
 .att-name { align-self: stretch; font-size: 11px; line-height: 1.3; font-weight: 600; color: var(--text); overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .att-x { position: absolute; top: 4px; right: 4px; z-index: 2; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 50%; background: rgba(0,0,0,.55); color: #fff; cursor: pointer; }
 .att-x svg { width: 12px; height: 12px; }
+/* Eager-upload status layer on attachment cards: a progress ring while the
+   upload runs (--p is 0..1), tap-to-retry when it failed; gone once done. */
+.att-overlay { position: absolute; inset: 0; z-index: 1; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.42); border-radius: inherit; }
+.att-ring { width: 34px; height: 34px; border-radius: 50%; background: conic-gradient(var(--accent) calc(var(--p, 0) * 1turn), rgba(255,255,255,.3) 0); -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 3.5px)); mask: radial-gradient(farthest-side, transparent calc(100% - 4px), #000 calc(100% - 3.5px)); }
+.att-retry { width: 34px; height: 34px; border: 0; border-radius: 50%; background: rgba(229,72,77,.9); color: #fff; font-size: 18px; line-height: 1; cursor: pointer; }
 #input { flex: 1; resize: none; max-height: 180px; font: inherit; background: none; color: var(--text); border: 0; border-radius: 0; padding: 6px; outline: none; caret-color: var(--accent); }
 #input::placeholder { color: var(--muted); }
 .btn.send, .btn.attach { width: 36px; height: 36px; border-radius: 50%; border: 0; font-size: 18px; flex: none; display: flex; align-items: center; justify-content: center; padding: 0; }
@@ -526,6 +622,7 @@ body {
 
 /* ---- outbox status (an in-flight or failed send) ---- */
 .msg.user.outbox { display: flex; margin-top: -12px; } /* hugs the message it belongs to */
+.msg.user.outbox[hidden] { display: none; } /* text-only sends: no "Sending…" row (display:flex would beat [hidden]) */
 .ob-row { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
 .msg.user.outbox.failed .ob-label { color: #e5484d; font-weight: 600; }
 .ob-btn { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 3px 10px; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
@@ -535,6 +632,21 @@ body {
 /* ---- toast (transient notice, e.g. connection trouble) ---- */
 .toast { position: fixed; left: 50%; bottom: 92px; transform: translateX(-50%); z-index: 60; max-width: 86vw; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 12px; padding: 9px 14px; font-size: 13px; text-align: center; box-shadow: 0 8px 30px rgba(0,0,0,.35); }
 .toast[hidden] { display: none; }
+
+/* ---- first-run guide: spotlight + explainer card ---- */
+.guide-overlay { position: fixed; inset: 0; z-index: 80; }
+.guide-hl { position: fixed; border-radius: 12px; box-shadow: 0 0 0 200vmax rgba(0,0,0,.62); border: 2px solid var(--accent); pointer-events: none; transition: left .25s ease, top .25s ease, width .25s ease, height .25s ease; }
+.guide-card { position: fixed; background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 16px; box-shadow: 0 20px 56px rgba(0,0,0,.5); display: flex; flex-direction: column; gap: 10px; transition: left .25s ease, top .25s ease; }
+.guide-title { font-size: 16px; font-weight: 700; }
+.guide-text { font-size: 13.5px; color: var(--muted); line-height: 1.5; display: flex; flex-direction: column; gap: 8px; }
+.guide-row { display: flex; gap: 9px; align-items: flex-start; }
+.guide-row .ico { color: var(--accent); margin-top: 2px; flex: none; }
+.guide-row strong { color: var(--text); font-weight: 600; }
+.guide-dots { display: flex; gap: 5px; }
+.guide-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--panel-2); }
+.guide-dot.on { background: var(--accent); }
+.guide-btns { display: flex; justify-content: space-between; gap: 8px; }
+.guide-btns .btn.primary { width: auto; padding: 8px 20px; }
 
 /* ---- mobile ---- */
 #backdrop { display: none; }

@@ -1,30 +1,17 @@
 // Connection switcher. The page is served by the gateway, and the same gateway
-// is reachable on several URLs (LAN, Tailscale, Cloudflare). This overlay lists
-// them and, on pick, simply navigates the browser there — same server, same
-// sessions, same token, just a different network path. The current connection
-// is marked and not clickable.
+// is reachable on several URLs (LAN, Tailscale, Cloudflare). Rendered as a
+// sub-page inside Settings: it lists them and, on pick, simply navigates the
+// browser there — same server, same sessions, same token, just a different
+// network path. The current connection is marked and not clickable.
 
 import { el } from "./dom.js";
 import { icon } from "./icons.js";
 
 export function createEndpointMenu({ fetchEndpoints }) {
-  const list = el("div", { class: "ep-list" });
-  const panel = el("div", { class: "fp-panel ep-panel" },
-    el("div", { class: "fp-head" },
-      el("strong", { text: "Connection" }),
-      el("button", { class: "btn ghost fp-x", type: "button", onClick: close }, icon("x")),
-    ),
-    list,
-  );
-  const overlay = el("div", { class: "fp-overlay", hidden: "" }, panel);
-  document.body.appendChild(overlay);
-  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
-
-  function close() { overlay.setAttribute("hidden", ""); }
-
-  async function open() {
-    overlay.removeAttribute("hidden");
-    list.innerHTML = "";
+  // Fill `container` with the endpoint list (the settings panel owns the chrome).
+  async function render(container) {
+    const list = el("div", { class: "ep-list" });
+    container.replaceChildren(list);
     list.appendChild(el("div", { class: "fp-empty", text: "Loading…" }));
     let eps = [];
     try { eps = await fetchEndpoints(); } catch { eps = null; }
@@ -45,5 +32,5 @@ export function createEndpointMenu({ fetchEndpoints }) {
     }
   }
 
-  return { open };
+  return { render };
 }

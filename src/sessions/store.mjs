@@ -58,7 +58,9 @@ export const sessionStore = {
       if (!f.endsWith(".json")) continue;
       try {
         const s = JSON.parse(await fsp.readFile(path.join(config.dataDir, f), "utf8"));
-        out.push({ id: s.id, title: s.title, agentId: s.agentId, model: s.model, cwd: s.cwd || null, updatedAt: s.updatedAt });
+        // model: what the session actually runs with — the last picked control
+        // value wins over the create-time default.
+        out.push({ id: s.id, title: s.title, agentId: s.agentId, model: (s.controls && s.controls.model) || s.model, cwd: s.cwd || null, updatedAt: s.updatedAt });
       } catch { /* skip corrupt */ }
     }
     return out.sort((a, b) => b.updatedAt - a.updatedAt);

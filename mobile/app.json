@@ -1,0 +1,52 @@
+{
+  "expo": {
+    "name": "Wakili",
+    "slug": "wakili",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#18181b",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#18181b"
+    },
+    "ios": {
+      "bundleIdentifier": "com.ahmedgamil.wakili",
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Wakili scans the QR code shown on your computer to connect."
+      }
+    },
+    "android": {
+      "package": "com.ahmedgamil.wakili",
+      "adaptiveIcon": {
+        "backgroundColor": "#ffffff",
+        "foregroundImage": "./assets/android-icon-foreground.png"
+      },
+      "permissions": ["android.permission.CAMERA"]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Wakili scans the QR code shown on your computer to connect."
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true,
+            "ndkVersion": "27.0.12077973"
+
+          }
+        }
+      ]
+    ]
+  }
+}

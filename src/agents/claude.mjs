@@ -300,8 +300,12 @@ export const claudeAgent = {
     if (controls.effort) args.push("--effort", controls.effort);
     if (resumeId) args.push("--resume", resumeId);
 
+    // Appending the thinking keyword to a slash command ("/context\n\nthink")
+    // stops the CLI from recognizing it — the whole thing would go to the model
+    // as plain text. Slash commands ship exactly as typed.
+    const isSlash = /^\//.test((text || "").trim());
     const keyword = THINKING[controls.thinking] || "";
-    const prompt = keyword ? `${text}\n\n${keyword}` : text;
+    const prompt = keyword && !isSlash ? `${text}\n\n${keyword}` : text;
 
     const child = spawn("claude", args, {
       shell: config.isWin,
@@ -312,9 +316,9 @@ export const claudeAgent = {
         // in the native Claude Code resume list (the picker hides the default
         // "sdk-cli" entrypoint). Configurable — see config.claudeEntrypoint.
         CLAUDE_CODE_ENTRYPOINT: config.claudeEntrypoint,
-        REMOTE_AGENT_SESSION: sessionId,
-        REMOTE_AGENT_GATEWAY: gatewayUrl,
-        REMOTE_AGENT_TOKEN: config.token,
+        WAKILI_SESSION: sessionId,
+        WAKILI_GATEWAY: gatewayUrl,
+        WAKILI_TOKEN: config.token,
       },
     });
 
@@ -332,10 +336,21 @@ export const claudeAgent = {
       }
     });
     child.stderr.on("data", (d) => onError && onError(d.toString()));
-    child.on("close", (code) => onClose && onClose(code));
+    let closed = false;
+    const closeOnce = (code) => { if (!closed) { closed = true; onClose && onClose(code); } };
+    child.on("close", closeOnce);
+    // A failed spawn (bad cwd, missing binary) emits 'error', not 'close'. Without
+    // this handler that error is unhandled and takes down the whole gateway.
+    child.on("error", (e) => {
+      if (onError) onError(`failed to start claude: ${e.message}`);
+      closeOnce(-1);
+    });
 
-    child.stdin.write(prompt);
-    child.stdin.end();
+    // stdin writes can also throw if the process never started.
+    try {
+      child.stdin.write(prompt);
+      child.stdin.end();
+    } catch { /* surfaced via the error handler above */ }
     return child;
   },
 };

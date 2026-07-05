@@ -2,7 +2,7 @@
 // stack of modern dropdowns: Agent, Model (for that agent), then the agent's
 // other settings. Switching agent just updates the Model dropdown in place.
 
-import { el } from "./dom.js";
+import { el, dismissFirst } from "./dom.js";
 import { createDropdown } from "./Dropdown.js";
 
 export function createModelPicker({ onPickAgent, onPickModel, onControlChange, onToggleAutoAllow }) {
@@ -14,7 +14,7 @@ export function createModelPicker({ onPickAgent, onPickModel, onControlChange, o
   let open = false;
   const setOpen = (v) => { open = v; v ? pop.removeAttribute("hidden") : pop.setAttribute("hidden", ""); };
   trigger.addEventListener("click", (e) => { e.stopPropagation(); setOpen(!open); });
-  document.addEventListener("click", (e) => { if (open && !root.contains(e.target)) setOpen(false); });
+  dismissFirst(() => open, (t) => root.contains(t), () => setOpen(false));
 
   function render({ agents, agentId, controls, autoAllow }) {
     const agent = agents.find((a) => a.id === agentId) || agents[0];
@@ -39,10 +39,12 @@ export function createModelPicker({ onPickAgent, onPickModel, onControlChange, o
 
     // "Allow always" — a plain on/off switch (not an agent control; it governs the
     // gateway's permission cards). When on, incoming permissions auto-approve.
-    const knob = el("button", { class: "switch" + (autoAllow ? " on" : ""), type: "button", role: "switch", "aria-checked": autoAllow ? "true" : "false" }, el("span", { class: "switch-dot" }));
-    knob.addEventListener("click", (e) => { e.stopPropagation(); onToggleAutoAllow(!autoAllow); });
-    pop.appendChild(el("div", { class: "switch-row" }, el("span", { class: "switch-label", text: "Allow always" }), knob));
+    const knob = el("button", { class: "switch" + (autoAllow ? " on" : ""), type: "button", role: "switch", "aria-checked": autoAllow ? "true" : "false", tabindex: "-1" }, el("span", { class: "switch-dot" }));
+    const swRow = el("div", { class: "switch-row" }, el("span", { class: "switch-label", text: "Allow always" }), knob);
+    // The whole row is the hit area — the knob alone is too small on phones.
+    swRow.addEventListener("click", (e) => { e.stopPropagation(); onToggleAutoAllow(!autoAllow); });
+    pop.appendChild(swRow);
   }
 
-  return { el: root, render, open: () => setOpen(true) };
+  return { el: root, render, open: () => setOpen(true), close: () => setOpen(false) };
 }

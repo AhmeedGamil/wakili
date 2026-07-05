@@ -11,9 +11,9 @@ process.stdin.on("end", () => {
   let info = {};
   try { info = JSON.parse(data); } catch { /* ignore */ }
 
-  const sessionId = process.env.REMOTE_AGENT_SESSION || "";
-  const gateway = process.env.REMOTE_AGENT_GATEWAY || "http://127.0.0.1:8730";
-  const token = process.env.REMOTE_AGENT_TOKEN || "";
+  const sessionId = process.env.WAKILI_SESSION || "";
+  const gateway = process.env.WAKILI_GATEWAY || "http://127.0.0.1:8730";
+  const token = process.env.WAKILI_TOKEN || "";
   const u = new URL(gateway + "/internal/permission");
   const payload = JSON.stringify({ sessionId, tool: info.tool_name, input: info.tool_input });
 

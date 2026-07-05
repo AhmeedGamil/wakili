@@ -1,6 +1,6 @@
-# Remote Agent
+# Wakili
 
-A phone gateway for your local coding agents. Run it on your laptop and drive your
+A phone gateway for your local coding agents. Run it on your computer and drive your
 agent sessions from your phone — over your LAN, privately via Tailscale, or publicly
 via a Cloudflare tunnel. Streaming output, tool/permission cards, file upload/download,
 and an in-app connection switcher.
@@ -48,14 +48,14 @@ under `data/`.
 
 ## Connection modes
 
-Pick a mode by **which command you run** on the laptop. Every mode prints one or more
+Pick a mode by **which command you run** on the computer. Every mode prints one or more
 URLs **and a scannable QR code** in the terminal — on the phone you can either scan the
 QR with the camera or open the URL by hand. Every URL already contains the access token
 (`?t=…`), which the phone saves after the first open, so there's nothing to type.
 
 Quick reference:
 
-| Mode | Reaches from | Laptop command | Phone opens |
+| Mode | Reaches from | Computer command | Phone opens |
 |------|--------------|----------------|-------------|
 | **Local network** | same Wi‑Fi only | `npm start` | `http://<lan-ip>:8730/?t=…` |
 | **Tailscale** | anywhere (private) | `npm start` or `npm run tailscale` | `http://100.x.x.x:8730/?t=…` |
@@ -67,18 +67,18 @@ Quick reference:
 
 ### Mode 1 — Local network (same Wi‑Fi)
 
-The simplest mode: the phone talks to the laptop directly over your Wi‑Fi. Nothing to
+The simplest mode: the phone talks to the computer directly over your Wi‑Fi. Nothing to
 install.
 
-1. Put the **laptop and phone on the same Wi‑Fi network**.
-2. On the laptop: `npm start`.
+1. Put the **computer and phone on the same Wi‑Fi network**.
+2. On the computer: `npm start`.
 3. The terminal prints a **`Phone:` line** (`http://<lan-ip>:8730/?t=…`) and a **QR code**
-   under *"Scan to open on your phone (same Wi‑Fi)"*. (The `Laptop:` `localhost` line is
-   for opening on the laptop itself.)
+   under *"Scan to open on your phone (same Wi‑Fi)"*. (The `Computer:` `localhost` line is
+   for opening on the computer itself.)
 4. On the phone: **scan the QR** with the camera, or type the `Phone:` URL into the browser.
 5. Done — the page loads and the token is saved.
 
-> If it won't load: you're not on the same Wi‑Fi, or the laptop's firewall is blocking
+> If it won't load: you're not on the same Wi‑Fi, or the computer's firewall is blocking
 > port `8730` (allow Node through, or allow that port).
 
 ---
@@ -86,16 +86,16 @@ install.
 ### Mode 2 — Tailscale (private, from anywhere)
 
 Tailscale builds a **private network** between your devices, so the phone reaches the
-laptop from **any network (cellular, another Wi‑Fi)** without exposing anything publicly.
+computer from **any network (cellular, another Wi‑Fi)** without exposing anything publicly.
 Both devices must be signed into the **same Tailscale account**.
 
-1. **Install Tailscale on the laptop** — download from `tailscale.com/download`, install,
+1. **Install Tailscale on the computer** — download from `tailscale.com/download`, install,
    and **sign in** (Google/Microsoft/GitHub/email — remember which account).
 2. **Install the Tailscale app on the phone** — from the App Store / Google Play — and
-   **sign in with the *same* account** as the laptop.
+   **sign in with the *same* account** as the computer.
 3. **Turn Tailscale ON on both devices** (the app toggle must be connected/green). Now
    both are on the same private "tailnet".
-4. On the laptop: `npm start` (Tailscale is auto‑detected) — or `npm run tailscale`.
+4. On the computer: `npm start` (Tailscale is auto‑detected) — or `npm run tailscale`.
 5. The terminal prints a **`Tunnel:` line** (`http://100.x.x.x:8730/?t=…`, a `100.x`
    address) and a **QR code** under *"Scan to connect from anywhere (Tailscale)"*.
 6. On the phone, **with the Tailscale app still turned ON**, scan that QR or open the
@@ -114,9 +114,9 @@ Cloudflare gives a **public https URL** reachable from any network with **no sha
 account** — handy when you can't use Tailscale. The access **token** is what keeps it
 private, so guard the URL.
 
-1. **Install `cloudflared` on the laptop** — from Cloudflare's downloads page. **No login
+1. **Install `cloudflared` on the computer** — from Cloudflare's downloads page. **No login
    or Cloudflare account is needed** for a quick tunnel.
-2. On the laptop: `npm run cloudflare`. This starts the gateway **and** the Cloudflare
+2. On the computer: `npm run cloudflare`. This starts the gateway **and** the Cloudflare
    bridge together (one command).
 3. The terminal prints a **`https://<name>.trycloudflare.com/cf.html?t=…` URL** and a
    **QR code**. Note it ends in **`/cf.html`** — that's the correct page for this mode.
@@ -142,11 +142,11 @@ target only connects if the phone's current network can actually reach it.)
 
 ---
 
-## Away from the laptop: lock screen + keep awake
+## Away from the computer: lock screen + keep awake
 
 When you're driving the agent remotely, device controls live in the sidebar:
 
-- **🔒 Lock** — locks the laptop's screen so no one at the machine can see or touch it.
+- **🔒 Lock** — locks the computer's screen so no one at the machine can see or touch it.
   The agent keeps running. Works on Windows, macOS, and Linux (logind / screensaver).
   Unlock physically when you're back — there's no remote unlock by design.
 - **🌑 Screen off** — turns the **display off to save power** (the panel is the biggest
@@ -156,10 +156,10 @@ When you're driving the agent remotely, device controls live in the sidebar:
   power-saving for an unattended machine.
 - **☕ Keep awake** — stops the machine from **sleeping** on idle (the screen can still
   lock/turn off), so a remote turn isn't suspended while you're away. On by default;
-  toggle it live, or set `REMOTE_AGENT_KEEP_AWAKE=0` to opt out. It reverts the moment
+  toggle it live, or set `WAKILI_KEEP_AWAKE=0` to opt out. It reverts the moment
   the gateway stops — no permanent power-setting changes.
 
-> Closing a **laptop lid** can still force sleep on some machines — that's a separate
+> Closing a **computer lid** can still force sleep on some machines — that's a separate
 > OS lid-power setting, outside this app.
 
 ## Configuration
@@ -170,10 +170,11 @@ Set these in `.env` (copy from `.env.example`) or as real environment variables
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `PORT` | `8730` | Gateway port. |
-| `REMOTE_AGENT_TOKEN` | auto-generated | Access token (the only credential). Unset → generated & persisted to `data/token.txt`. |
-| `REMOTE_AGENT_CLAUDE_ENTRYPOINT` | `claude-vscode` | Which editor's resume list your chats appear in (`claude-vscode` / `cli` / `sdk-cli`). |
+| `WAKILI_TOKEN` | auto-generated | Access token (the only credential). Unset → generated & persisted to `~/.wakili/token.txt`. |
+| `WAKILI_CLAUDE_ENTRYPOINT` | `claude-vscode` | Which editor's resume list your chats appear in (`claude-vscode` / `cli` / `sdk-cli`). |
+| `WAKILI_HOME` | `~/.wakili` | Where the runtime store (sessions, token, uploads) lives. |
 | `CF_BRIDGE_PORT` | `8731` | Port for the Cloudflare bridge. |
-| `REMOTE_AGENT_KEEP_AWAKE` | `1` | Keep the machine awake while running (screen can still lock). `0` to opt out. |
+| `WAKILI_KEEP_AWAKE` | `1` | Keep the machine awake while running (screen can still lock). `0` to opt out. |
 
 Deeper settings live in [`src/config.mjs`](src/config.mjs).
 

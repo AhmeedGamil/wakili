@@ -86,7 +86,7 @@ function spawnKeepAwake() {
     return spawn("powershell", ["-NoProfile", "-NonInteractive", "-EncodedCommand", enc], { stdio: "ignore", windowsHide: true });
   }
   if (platform === "darwin") return spawn("caffeinate", ["-s"], { stdio: "ignore" }); // system sleep blocked, display free
-  return spawn("systemd-inhibit", ["--what=sleep:idle", "--who=remote-agent", "--why=phone gateway", "--mode=block", "sleep", "infinity"], { stdio: "ignore" });
+  return spawn("systemd-inhibit", ["--what=sleep:idle", "--who=wakili", "--why=phone gateway", "--mode=block", "sleep", "infinity"], { stdio: "ignore" });
 }
 
 export function setKeepAwake(on) {
@@ -102,6 +102,27 @@ export function setKeepAwake(on) {
     keepChild = null;
   }
   return !!keepChild;
+}
+
+// --- Shut the computer down --------------------------------------------------
+// Windows gets a short delay so this HTTP response reaches the phone before the
+// OS kills the gateway; macOS goes through System Events (plain `shutdown`
+// needs root); Linux tries systemd first with a classic fallback.
+export function shutdownComputer() {
+  const cmds = platform === "win32"
+    ? [["shutdown", ["/s", "/t", "5"]]]
+    : platform === "darwin"
+      ? [["osascript", ["-e", 'tell app "System Events" to shut down']]]
+      : [["systemctl", ["poweroff"]], ["shutdown", ["-h", "now"]]];
+  return new Promise((resolve) => {
+    let i = 0;
+    const tryNext = () => {
+      if (i >= cmds.length) return resolve({ ok: false, error: "No working shutdown command found on this system." });
+      const [cmd, args] = cmds[i++];
+      execFile(cmd, args, { timeout: 5000 }, (err) => (err ? tryNext() : resolve({ ok: true })));
+    };
+    tryNext();
+  });
 }
 
 export function powerStatus() { return { platform, keepAwake: !!keepChild }; }

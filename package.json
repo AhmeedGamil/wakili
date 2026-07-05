@@ -1,5 +1,5 @@
 {
-  "name": "remote-agent",
+  "name": "wakili",
   "version": "0.1.0",
   "private": true,
   "description": "Phone gateway for Claude Code — chat with your local Claude Code sessions from your phone over LAN, Tailscale, or Cloudflare.",

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="chat_untitled">New chat</string>
+    <string name="chat_input_hint">Message</string>
+    <string name="chat_add_images">Images</string>
+    <string name="chat_add_files">Files</string>
+    <string name="chat_add_terminal">Terminal</string>
+    <string name="chat_working">Working…</string>
+    <string name="chat_thoughts">Thoughts</string>
+    <string name="chat_greeting">What can I help with?</string>
+    <string name="chat_reconnecting">Reconnecting…</string>
+    <string name="chat_load_error">Couldn\'t load this chat.</string>
+    <string name="chat_retry">Try again</string>
+    <string name="chat_busy_notice">The agent is still working — try again when this turn finishes.</string>
+    <string name="chat_tool_error">error</string>
+    <string name="chat_permission_title">Allow %1$s?</string>
+    <string name="chat_asking">The agent is asking…</string>
+    <string name="chat_more_requests">+%1$d more requests waiting</string>
+    <string name="chat_deny">Deny</string>
+    <string name="chat_allow">Allow once</string>
+    <string name="chat_always">Always</string>
+    <string name="chat_send_answers">Send answers</string>
+    <string name="chat_other_option">Other…</string>
+    <string name="chat_allow_all">Allow all</string>
+    <string name="chat_deny_all">Deny all</string>
+    <string name="chat_queued">Queued: %1$s</string>
+    <string name="chat_agent">Agent</string>
+    <string name="chat_auto_allow">Allow always</string>
+    <string name="chat_format_markdown">Format markdown</string>
+    <string name="chat_allowed">allowed %1$s</string>
+    <string name="chat_denied">denied %1$s</string>
+    <string name="chat_stopped">stopped</string>
+    <string name="chat_answered">answered</string>
+</resources>

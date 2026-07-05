@@ -42,7 +42,7 @@ export function createDock({ onPermission, onAnswerQuestion, onArchive, onActive
   // ---- permissions ----
   function addPermission(req) {
     if (perms.some((r) => r.id === req.id)) return; // stream replay of a card already up
-    if (req.autoAllow) { decide(req, "allow"); return; } // "Allow always" → resolve at once, no card
+    if (req.autoAllow) { decide(req, "allow_auto"); return; } // "Allow always" → resolve at once, no card
     perms.push(req);
     renderPerms();
   }
@@ -51,7 +51,9 @@ export function createDock({ onPermission, onAnswerQuestion, onArchive, onActive
   function decide(req, decision) {
     const i = perms.indexOf(req);
     if (i !== -1) perms.splice(i, 1);
-    onPermission(req.id, decision, req.tool);
+    // "allow_auto" is a display-only variant (the global "Allow always" switch
+    // answered, not the user) — the gateway only understands allow/deny.
+    onPermission(req.id, decision === "allow_auto" ? "allow" : decision, req.tool);
     archive(permRecord(req, decision));
     renderPerms();
   }
@@ -64,7 +66,9 @@ export function createDock({ onPermission, onAnswerQuestion, onArchive, onActive
   // Compact, expandable record dropped into the scrolling history.
   function permRecord(req, decision) {
     const ok = decision !== "deny";
-    const note = decision === "allow_session" ? " — allowed (session)" : ok ? " — allowed" : " — denied";
+    const note = decision === "allow_session" ? " — allowed (session)"
+      : decision === "allow_auto" ? " — allowed (always)"
+      : ok ? " — allowed" : " — denied";
     const rec = el("div", { class: "msg perm decided " + (ok ? "allowed" : "denied") },
       el("div", { class: "perm-head" }, icon(ok ? "check" : "x"), el("span", { text: req.tool + note })));
     if (isExpandable(req.tool) && req.input && typeof req.input === "object") rec.appendChild(toolCard(req.tool, req.input));
@@ -81,7 +85,7 @@ export function createDock({ onPermission, onAnswerQuestion, onArchive, onActive
     const actions = el("div", { class: "perm-actions" },
       el("button", { class: "btn deny", type: "button", onClick: () => decide(req, "deny") }, "Deny"),
       el("button", { class: "btn allow", type: "button", onClick: () => decide(req, "allow") }, "Allow once"),
-      el("button", { class: "btn allow-session", type: "button", onClick: () => decide(req, "allow_session") }, "Always"),
+      el("button", { class: "btn allow-session", type: "button", onClick: () => decide(req, "allow_session") }, "This session"),
     );
     return el("div", { class: "card perm" }, head, el("div", { class: "perm-scroll" }, body), actions);
   }

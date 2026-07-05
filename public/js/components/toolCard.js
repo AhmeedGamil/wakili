@@ -34,6 +34,8 @@ export function diffBody(name, input) {
   else if (name === "MultiEdit") { for (const e of input.edits || []) { if (e.old_string) pre("del", e.old_string); if (e.new_string) pre("add", e.new_string); } }
   else if (name === "NotebookEdit") pre("add", input.new_source);
   else if (name === "Bash") pre("cmd", input.command); // description shows in the header
+  // Other shell-like tools (PowerShell, …): show the command, not a JSON blob.
+  else if (input && typeof input === "object" && typeof input.command === "string") pre("cmd", input.command);
   else pre("cmd", typeof input === "object" ? JSON.stringify(input, null, 2) : input);
   return wrap;
 }
@@ -42,7 +44,7 @@ export function diffBody(name, input) {
 // for Read). Bash has no path, so it shows its description instead (or just
 // "Bash" when there's none). The title wraps so a long path shows in full.
 function headIcon(name) {
-  if (name === "Bash") return "terminal";
+  if (name === "Bash" || name === "PowerShell") return "terminal";
   if (EDIT_TOOLS.has(name)) return "pencil";
   if (name === "Read") return "file-text";
   if (name === "Grep") return "search";
@@ -60,7 +62,11 @@ function headLabel(name, input) {
   if (name === "Grep" && obj && obj.pattern) return 'Grep "' + obj.pattern + '"' + (obj.path ? " (in " + obj.path + ")" : "");
   if (name === "Glob" && obj && obj.pattern) return 'Glob pattern: "' + obj.pattern + '"';
   const f = fileOf(input);
-  return name + (f ? " · " + f + lineRange(name, input) : "");
+  if (f) return name + " · " + f + lineRange(name, input);
+  // Any other tool that carries a human description (PowerShell, MCP tools, …)
+  // surfaces it like Bash does, instead of showing a bare name.
+  const d = obj && typeof obj.description === "string" ? obj.description.trim() : "";
+  return d ? name + " · " + d : name;
 }
 
 // A short "what happened" summary shown at the right of the header. Edit/Write
