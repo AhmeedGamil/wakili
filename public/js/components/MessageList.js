@@ -10,6 +10,7 @@ import { createTypewriter } from "../core/typewriter.js";
 import { renderMarkdown } from "../core/markdown.js";
 import { renderTool, attachOutput } from "./toolCard.js";
 import { icon } from "./icons.js";
+import { openImage, downloadFile } from "./media.js";
 
 const MD_KEY = "ra-markdown"; // "1" = format markdown, "0" = raw text
 
@@ -51,8 +52,6 @@ export function createMessageList() {
   tw.setRenderer((node, full) => writeText(node, full));
 
   let workingEl = null;   // neutral processing pulse
-  let turnActive = false; // a turn is running (drives the idle re-show below)
-  let idleTimer = 0;      // re-shows the pulse when streaming text goes quiet mid-turn
   let textEl = null;      // current open answer block
   let thinkEl = null;     // current open thoughts body
   let thinkSummary = null;
@@ -62,9 +61,7 @@ export function createMessageList() {
   // sequentially, so the oldest unfilled card is the right one).
   let awaiting = [];
 
-  function reset() { tw.reset(); endTurnState(); workingEl = textEl = thinkEl = thinkSummary = thinkLabel = null; awaiting = []; }
-  // The turn is over: stop tracking so the idle timer can't re-show a stale pulse.
-  function endTurnState() { turnActive = false; clearTimeout(idleTimer); }
+  function reset() { tw.reset(); workingEl = textEl = thinkEl = thinkSummary = thinkLabel = null; awaiting = []; }
 
   // Register a freshly-rendered tool card so a later tool_result can fill it.
   function registerToolCard(node, id) {
@@ -79,10 +76,10 @@ export function createMessageList() {
     const src = a.url || "";
     if (isImg && src) {
       return el("div", { class: "msg user" },
-        el("a", { class: "att-msg img", href: src, target: "_blank" }, el("img", { src, alt: a.name || "image" })));
+        el("a", { class: "att-msg img", onClick: () => openImage(src, a.name) }, el("img", { src, alt: a.name || "image" })));
     }
     const card = el("div", { class: "att-msg doc" }, icon("paperclip"), el("span", { class: "att-msg-name", text: a.name || "file" }));
-    return el("div", { class: "msg user" }, src ? el("a", { class: "att-msg-link", href: src, target: "_blank", download: a.name || "" }, card) : card);
+    return el("div", { class: "msg user" }, src ? el("a", { class: "att-msg-link", onClick: () => downloadFile(src, a.name) }, card) : card);
   }
 
   // Accepts a plain string (text only) or { text, attachments }. Attachments
@@ -118,7 +115,7 @@ export function createMessageList() {
     const update = (st) => {
       if (st === "sent") { row.remove(); return; }
       const failed = st === "failed";
-      if (failed) { endTurnState(); hideWorking(); }
+      if (failed) hideWorking();
       row.hidden = !failed && !hasFiles;
       label.textContent = failed ? "Not sent" : "Sending…";
       row.classList.toggle("failed", failed);
@@ -130,7 +127,7 @@ export function createMessageList() {
     // until the server's turn_start (the agent spawn adds a beat). The real
     // turn_start re-calls showWorking (idempotent) and streaming clears it; a
     // failed send clears it via update() above.
-    if ((status || "sending") !== "failed") { turnActive = true; showWorking(); }
+    if ((status || "sending") !== "failed") showWorking();
     stick = true;
     scroll();
     return { update, remove: () => nodes.forEach((n) => n.remove()) };
@@ -145,7 +142,12 @@ export function createMessageList() {
   function staticThink(text) {
     root.appendChild(el("details", { class: "thoughts" }, el("summary", {}, icon("bulb"), el("span", { text: "Thoughts" })), writeText(el("div", { class: "think-body" }), text)));
   }
+  // History replay of an agent-sent file. When the stored part carries a url
+  // (new sends do), render it just like the live addFile: a thumbnail for images,
+  // a download link otherwise. Older parts without a url fall back to a name card.
   function staticFile(p) {
+    // Direct append (no `segment`, which would add a live "working" pulse).
+    if (p.url) { root.appendChild(fileCard({ name: p.name || "file", url: p.url, caption: p.caption })); return; }
     root.appendChild(el("div", { class: "msg assistant" }, el("div", { class: "tool" }, icon("paperclip"), el("span", { text: "sent: " + (p.name || "file") }))));
   }
   // `live` marks an in-progress turn (snapshot replay): tool cards without output
@@ -177,7 +179,7 @@ export function createMessageList() {
   // next live delta continues below it.
   function renderSnapshot(parts, busy) {
     renderParts(parts || [], true);
-    if (busy) { turnActive = true; showWorking(); }
+    if (busy) showWorking();
     scroll();
   }
 
@@ -189,15 +191,6 @@ export function createMessageList() {
     scroll();
   }
   function hideWorking() { if (workingEl) { workingEl.remove(); workingEl = null; } }
-
-  // Streaming text/thoughts stand in for the pulse while they flow. When they go
-  // quiet mid-turn (the model composing its next tool call, say) that indicator
-  // vanishes though work continues — so re-show the pulse after a short idle. Any
-  // fresh delta or segment hides it again; every turn-end path clears the timer.
-  function armIdlePulse() {
-    clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => { if (turnActive) showWorking(); }, 450);
-  }
 
   // close the open text/think blocks so the next segment appends below them
   function closeSegments() {
@@ -217,7 +210,7 @@ export function createMessageList() {
     scroll();
   }
 
-  function startAssistant() { turnActive = true; closeSegments(); showWorking(); }
+  function startAssistant() { closeSegments(); showWorking(); }
 
   function feedText(t) {
     hideWorking();
@@ -227,7 +220,6 @@ export function createMessageList() {
       root.appendChild(el("div", { class: "msg assistant" }, textEl));
     }
     tw.feed(textEl, t);
-    armIdlePulse();
   }
 
   function feedThink(t) {
@@ -240,7 +232,6 @@ export function createMessageList() {
       thinkEl = body;
     }
     tw.feed(thinkEl, t);
-    armIdlePulse();
   }
 
   function addTool(tool) {
@@ -267,27 +258,27 @@ export function createMessageList() {
   // output can still attach.
   function addRecord(node) { registerToolCard(node); segment(node); }
 
-  function addFile(file) {
+  // Build an agent-sent file node: a thumbnail for images (tap to open full
+  // size), a download link otherwise. Shared by the live path (addFile) and
+  // history replay (staticFile) so both render identically.
+  function fileCard(file) {
     const isImg = /\.(png|jpe?g|gif|webp|svg)$/i.test(file.name);
     const card = el("div", { class: "file-card" });
     if (isImg) {
-      // Images show as just the thumbnail (click to open full size) — no filename,
-      // since a long name overflows the image card.
-      card.appendChild(el("a", { href: file.url, target: "_blank" }, el("img", { class: "file-img", src: file.url, alt: file.name })));
+      card.appendChild(el("a", { class: "file-img-link", onClick: () => openImage(file.url, file.name) }, el("img", { class: "file-img", src: file.url, alt: file.name })));
     } else {
-      // Non-image files keep a download link; the name truncates with an ellipsis.
-      card.appendChild(el("a", { class: "file-link", href: file.url, target: "_blank", download: file.name }, icon("download"), el("span", { class: "file-name", text: file.name })));
+      card.appendChild(el("a", { class: "file-link", onClick: () => downloadFile(file.url, file.name) }, icon("download"), el("span", { class: "file-name", text: file.name })));
     }
     if (file.caption) card.appendChild(el("div", { class: "file-cap", text: file.caption }));
-    segment(el("div", { class: "msg assistant" }, card));
+    return el("div", { class: "msg assistant" }, card);
   }
+  function addFile(file) { segment(fileCard(file)); }
 
   // The turn ended early: drop the pulse and leave a small marker. "Interrupted"
   // when a queued message is about to go out; plain "Stopped" otherwise.
   function addStopped(interrupted) {
     closeSegments();
     hideWorking();
-    endTurnState();
     const label = interrupted ? "Interrupted" : "Stopped";
     root.appendChild(el("div", { class: "msg assistant" }, el("div", { class: "stopped-note" }, icon("square"), el("span", { text: label }))));
     scroll();

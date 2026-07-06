@@ -85,7 +85,7 @@ export function createDock({ onPermission, onAnswerQuestion, onArchive, onActive
     const actions = el("div", { class: "perm-actions" },
       el("button", { class: "btn deny", type: "button", onClick: () => decide(req, "deny") }, "Deny"),
       el("button", { class: "btn allow", type: "button", onClick: () => decide(req, "allow") }, "Allow once"),
-      el("button", { class: "btn allow-session", type: "button", onClick: () => decide(req, "allow_session") }, "This session"),
+      el("button", { class: "btn allow-session", type: "button", onClick: () => decide(req, "allow_session") }, "Session"),
     );
     return el("div", { class: "card perm" }, head, el("div", { class: "perm-scroll" }, body), actions);
   }

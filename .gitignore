@@ -7,6 +7,9 @@
 # Logs
 *.log
 
+# Build artifacts
+*.apk
+
 # Dependencies
 node_modules/
 

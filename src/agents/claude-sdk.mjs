@@ -18,7 +18,7 @@
 import http from "node:http";
 import path from "node:path";
 import { config, ROOT } from "../config.mjs";
-import { claudeAgent, THINKING, ASK_DIRECTIVE } from "./claude.mjs";
+import { claudeAgent, THINKING, PHONE_DIRECTIVE } from "./claude.mjs";
 
 const MCP_SERVER = path.join(ROOT, "src", "mcp-tools.mjs").replace(/\\/g, "/");
 
@@ -83,7 +83,7 @@ export const claudeSdkAgent = {
           // by /internal/permission via canUseTool, so we leave the SDK in "default".
           permissionMode: controls.permissionMode === "plan" ? "plan" : "default",
           disallowedTools: ["AskUserQuestion"], // force questions through the ask_options MCP tool
-          systemPrompt: { type: "preset", preset: "claude_code", append: ASK_DIRECTIVE },
+          systemPrompt: { type: "preset", preset: "claude_code", append: PHONE_DIRECTIVE },
           // Reuse the existing stdio MCP server (send_to_user + ask_options); it
           // needs the per-turn session/gateway/token via env, like the CLI path.
           mcpServers: {

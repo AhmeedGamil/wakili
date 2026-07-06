@@ -116,5 +116,5 @@ export function createAppearanceMenu({ getTheme, onSetTheme, getAccent, onSetAcc
   function open() { showTab(curTab); overlay.removeAttribute("hidden"); }
   // openTab/close/panel let the guided tour drive this panel step by step.
   function openTab(key) { showTab(key); overlay.removeAttribute("hidden"); }
-  return { open, openTab, close, panel };
+  return { open, openTab, close, panel, isOpen: () => !overlay.hasAttribute("hidden") };
 }

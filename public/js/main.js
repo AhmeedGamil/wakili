@@ -164,7 +164,63 @@ document.getElementById("app").append(sidebar.el, main, backdrop);
 // Running inside the native app shell (its WebView tags the user agent): the
 // shell already pads for the system bars, so trim our own safe-area padding.
 // Old installs still say ZogagApp — keep matching both.
-if (/WakiliApp|ZogagApp/i.test(navigator.userAgent)) document.documentElement.classList.add("native-app");
+const IS_NATIVE = /WakiliApp|ZogagApp/i.test(navigator.userAgent);
+if (IS_NATIVE) document.documentElement.classList.add("native-app");
+
+// Links inside rendered messages (markdown) point elsewhere on the web, but
+// target="_blank" doesn't open in a WebView — hand external links to the native
+// shell so they open in the system browser. Desktop keeps the normal new tab.
+if (IS_NATIVE) {
+  document.addEventListener("click", (e) => {
+    const a = e.target.closest && e.target.closest("a[href]");
+    if (!a) return;
+    const href = a.getAttribute("href") || "";
+    if (!/^(https?:|mailto:|tel:)/i.test(href)) return; // leave in-app "/" and "#" links alone
+    e.preventDefault();
+    try { window.ReactNativeWebView.postMessage(JSON.stringify({ wakiliOpenUrl: { url: href } })); } catch { /* not in shell */ }
+  }, true);
+}
+
+// ---- Android system back button ----
+// The native shell forwards each back press here before falling back to WebView
+// history / exiting. We close the top-most open surface (one per press) and
+// return true; when nothing is open we return false and the shell takes over.
+// Ordered top-most (most transient / highest on screen) first.
+const backLayers = [
+  // Guided tour: back skips it (same as its Skip button).
+  { isOpen: () => !!document.querySelector(".guide-overlay"),
+    close: () => document.querySelector(".guide-overlay .btn.ghost")?.click() },
+  // Full-screen image viewer.
+  { isOpen: () => !!document.querySelector(".lb-overlay:not([hidden])"),
+    close: () => document.querySelector(".lb-overlay:not([hidden])")?.setAttribute("hidden", "") },
+  // Transient popovers (also dismiss on an outside tap; back closes them too):
+  // topbar model picker, composer's slash / + menus, sidebar's filter popover.
+  { isOpen: () => picker.isOpen() || composer.menusOpen() || !!document.querySelector(".sess-pop:not([hidden])"),
+    close: () => {
+      if (picker.isOpen()) return picker.close();
+      if (composer.menusOpen()) return composer.closeMenus();
+      const p = document.querySelector(".sess-pop:not([hidden])");
+      if (p) p.hidden = true;
+    } },
+  // Full-screen / modal overlays.
+  { isOpen: () => folderPicker.isOpen(), close: () => folderPicker.close() },
+  { isOpen: () => filesPage.isOpen(), close: () => filesPage.close() },
+  // Terminal's own layers close before the page itself: close-tab confirm,
+  // then the "/" history menu, then the whole terminal.
+  { isOpen: () => terminalPage.confirmOpen(), close: () => terminalPage.hideConfirm() },
+  { isOpen: () => terminalPage.menuOpen(), close: () => terminalPage.closeMenu() },
+  { isOpen: () => !!terminalPage.el && !terminalPage.el.hasAttribute("hidden"), close: () => terminalPage.close() },
+  { isOpen: () => appearanceMenu.isOpen(), close: () => appearanceMenu.close() },
+  // The sidebar drawer, sitting under any of the above.
+  { isOpen: () => document.body.classList.contains("nav-open"),
+    close: () => document.body.classList.remove("nav-open") },
+];
+window.__wakiliBack = () => {
+  for (const layer of backLayers) {
+    if (layer.isOpen()) { layer.close(); return true; }
+  }
+  return false;
+};
 
 // ---- theme + accent ----
 function applyTheme(t) {
@@ -247,6 +303,8 @@ emitter.on("toast", (text) => {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => toastEl.setAttribute("hidden", ""), 4000);
 });
+// Let leaf components (image viewer / downloads) raise a toast without the emitter.
+window.__wakiliToast = (text) => emitter.emit("toast", text);
 
 // ---- state -> components ----
 let lastPick = "";

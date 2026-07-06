@@ -550,7 +550,10 @@ const server = http.createServer(async (req, res) => {
       // register in the persistent files log (sidebar "Sent by the agent" + survives restart)
       const token = recordFile({ sessionId: b.sessionId, source: "agent", filePath: b.path, name, caption: b.caption });
       const turn = activeTurns.get(b.sessionId);
-      if (turn) turn.push({ type: "file", name, caption: b.caption || "" });
+      // Persist the download url/token + image flag so reopening the chat can
+      // re-render the thumbnail — not just a name card (the live event below
+      // carries the same fields, which is why it shows live but not from history).
+      if (turn) turn.push({ type: "file", name, caption: b.caption || "", url: `/api/files/${token}`, token, image: IMG_RE.test(name) });
       publish(b.sessionId, {
         type: "_gateway", subtype: "file",
         token, name, caption: b.caption || "", url: `/api/files/${token}`,
@@ -564,9 +567,11 @@ const server = http.createServer(async (req, res) => {
       if (!f) return notFound(res);
       try {
         const data = await fsp.readFile(f.path);
+        // ?dl=1 → the phone's Download Manager should save it, not display it.
+        const disp = url.searchParams.get("dl") ? "attachment" : "inline";
         res.writeHead(200, {
           "Content-Type": MIME[path.extname(f.path).toLowerCase()] || "application/octet-stream",
-          "Content-Disposition": `inline; filename="${f.name}"`,
+          "Content-Disposition": `${disp}; filename="${f.name}"`,
         });
         return res.end(data);
       } catch { return notFound(res); }

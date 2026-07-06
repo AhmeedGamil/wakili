@@ -222,6 +222,26 @@ export const ASK_DIRECTIVE =
   "tool shows tappable buttons and pauses the turn until they answer, then returns their choice. Only " +
   "ask in plain prose for genuinely open-ended input that has no discrete options.";
 
+// The user is on a phone with no filesystem access, so a path in the reply is
+// useless to them — files must be pushed with send_to_user. The tool description
+// alone isn't a strong enough nudge, so we spell it out.
+export const SEND_DIRECTIVE =
+  "The user is on a phone and cannot open files by path — a filesystem path in your reply is useless " +
+  "to them. Whenever you create, build, generate, screenshot, or otherwise end up with a file the user " +
+  "would want (an image, screenshot, APK/build artifact, PDF, log, or any generated file), you MUST " +
+  "call the send_to_user tool (mcp__remoteagent__send_to_user) with its absolute path to deliver it to " +
+  "their phone. Do this proactively as soon as the file exists — do not wait to be asked, and never " +
+  "just print the path and stop.";
+
+// Both phone directives combined, for the SDK (in-process `append`) and Codex
+// (rides stdin) adapters — channels with no Windows shell in the way, so the
+// spaces and newline are safe. It must NOT be fed to the CLI adapter's
+// `--append-system-prompt`: that spawns through cmd.exe (shell:true), where a
+// space word-splits the arg (only "The" survives) and a newline truncates the
+// command line, dropping later flags like --resume. The CLI adapter deliberately
+// uses the single-line ASK_DIRECTIVE instead.
+export const PHONE_DIRECTIVE = ASK_DIRECTIVE + "\n\n" + SEND_DIRECTIVE;
+
 export const claudeAgent = {
   id: "claude",
   label: "Claude",

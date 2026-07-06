@@ -142,16 +142,15 @@ export function toolCard(name, input, { open = false, output = null, isError = f
   return el("div", { class: "tool-wrap" }, card, badge);
 }
 
-// Append a tool's output to an already-rendered card (the live path) and reveal
-// it, so the result shows up the moment the command finishes. No-op if the node
+// Append a tool's output to an already-rendered card (the live path). The card
+// keeps whatever collapsed/expanded state it has — it does NOT auto-open, so
+// cards stay collapsed until the user chooses to open them. No-op if the node
 // isn't a tool card or already has output.
 export function attachOutput(cardEl, output, isError) {
   if (!cardEl || !cardEl.classList || !cardEl.classList.contains("tool-card")) return false;
   const body = cardEl.querySelector(".tool-body");
   if (!body || body.querySelector(".diff-out")) return false;
   body.appendChild(outputPre(output, isError));
-  body.removeAttribute("hidden");
-  cardEl.classList.add("open");
   // Fill the header badge from the output when it wasn't known from the input
   // (Read/Grep/Glob). Edit/Write already set theirs, so leave a filled badge be.
   // The badge now lives outside the card (as a sibling in .tool-wrap).

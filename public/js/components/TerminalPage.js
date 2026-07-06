@@ -266,5 +266,13 @@ export function createTerminalPage({ onRun }) {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); run(); }
   });
 
-  return { open, close, el: overlay };
+  return {
+    open, close, el: overlay,
+    // Inner dismissible layers, so the native back button peels them off before
+    // leaving the whole page: the close-tab confirmation, then the history menu.
+    confirmOpen: () => !confirmBox.hidden,
+    hideConfirm,
+    menuOpen: () => menuOpen,
+    closeMenu,
+  };
 }

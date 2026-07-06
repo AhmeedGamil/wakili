@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { config, ROOT } from "../config.mjs";
-import { ASK_DIRECTIVE } from "./claude.mjs";
+import { PHONE_DIRECTIVE } from "./claude.mjs";
 
 // --- Model discovery ---------------------------------------------------------
 // Codex keeps a fresh model list on disk (fetched from OpenAI, revalidated by
@@ -175,9 +175,10 @@ export const codexAgent = {
     args.push(...mcpOverrides({ sessionId, gatewayUrl })); // phone tools (send_to_user / ask_options), this run only
     args.push("-"); // read the prompt from stdin
 
-    // Codex has no --append-system-prompt, so the phone directive (use
-    // ask_options for questions) rides in front of the prompt text instead.
-    const prompt = `[Gateway note: ${ASK_DIRECTIVE}]\n\n${text}`;
+    // Codex has no --append-system-prompt, so the phone directives (use
+    // ask_options for questions, send_to_user for files) ride in front of the
+    // prompt text via stdin — safe to be multi-line here (no shell involved).
+    const prompt = `[Gateway note: ${PHONE_DIRECTIVE}]\n\n${text}`;
 
     const child = spawn("codex", args, {
       shell: config.isWin,

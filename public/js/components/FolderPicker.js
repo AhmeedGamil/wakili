@@ -72,5 +72,5 @@ export function createFolderPicker({ onBrowse, onCreate }) {
     );
   }
 
-  return { open };
+  return { open, close, isOpen: () => !overlay.hasAttribute("hidden") };
 }

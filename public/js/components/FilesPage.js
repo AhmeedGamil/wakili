@@ -6,6 +6,7 @@
 
 import { el } from "./dom.js";
 import { icon } from "./icons.js";
+import { openImage, downloadFile } from "./media.js";
 
 export function createFilesPage() {
   let files = [];          // the global registry: [{ source, image, name, url }]
@@ -53,13 +54,13 @@ export function createFilesPage() {
     if (tab === "images") {
       const grid = el("div", { class: "ft-grid" });
       for (const f of items) {
-        grid.appendChild(el("a", { class: "ft-imglink", href: f.url, target: "_blank", title: f.name },
+        grid.appendChild(el("a", { class: "ft-imglink", title: f.name, onClick: () => openImage(f.url, f.name) },
           el("img", { class: "ft-thumb", src: f.url, alt: f.name })));
       }
       sec.appendChild(grid);
     } else {
       for (const f of items) {
-        sec.appendChild(el("a", { class: "ft-file", href: f.url, target: "_blank", download: f.name, title: f.name }, icon("download"), el("span", { text: f.name })));
+        sec.appendChild(el("a", { class: "ft-file", title: f.name, onClick: () => downloadFile(f.url, f.name) }, icon("download"), el("span", { text: f.name })));
       }
     }
     return sec;
@@ -67,5 +68,5 @@ export function createFilesPage() {
 
   function render(list) { files = Array.isArray(list) ? list : []; if (!overlay.hasAttribute("hidden")) draw(); }
 
-  return { open, render };
+  return { open, render, close, isOpen: () => !overlay.hasAttribute("hidden") };
 }

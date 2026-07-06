@@ -46,5 +46,5 @@ export function createModelPicker({ onPickAgent, onPickModel, onControlChange, o
     pop.appendChild(swRow);
   }
 
-  return { el: root, render, open: () => setOpen(true), close: () => setOpen(false) };
+  return { el: root, render, open: () => setOpen(true), close: () => setOpen(false), isOpen: () => open };
 }

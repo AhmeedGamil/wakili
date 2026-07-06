@@ -238,6 +238,10 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
 
   return {
     el: root,
+    // Native back button: a transient menu (slash commands or the + menu) is
+    // its own dismissible layer — report whether one is open and close it.
+    menusOpen: () => menuOpen || !addMenu.hasAttribute("hidden"),
+    closeMenus: () => { if (menuOpen) closeMenu(); else closeAddMenu(); },
     // Busy → Stop when the box is empty, Send when there's text to queue.
     setBusy: (b) => { busy = !!b; refreshButton(); },
     // Block sending while a permission / question card awaits an answer.
