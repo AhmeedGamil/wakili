@@ -13,10 +13,14 @@ const GATED = new Set(["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "As
 // sessions open in the same posture (notes #5). Per-session changes still win.
 const PERM_KEY = "ra-perm-mode";
 
-// "Allow always" — a global switch. When on, an incoming permission card is
-// approved automatically (the Allow button is clicked for you). Remembered
-// across sessions/restarts in localStorage.
-const AUTO_KEY = "ra-auto-allow";
+// "Allow always" — PER SESSION. When on for a session, that session's incoming
+// permission cards are approved automatically (the Allow button is clicked for
+// you). Stored as a { sessionId: 1 } map so every session starts OFF and
+// enabling it in one chat never loosens another. Survives restarts.
+const AUTO_KEY = "ra-auto-allow-sessions";
+// The old global switch is retired — remove it so nobody stays silently
+// auto-allowing everything from a setting they flipped before this change.
+try { localStorage.removeItem("ra-auto-allow"); } catch { /* private mode */ }
 // The last agent + controls actually used, applied as defaults for new chats so
 // they keep your model/effort/thinking/mode instead of snapping back to the
 // agent's built-in default (e.g. Sonnet).
@@ -36,6 +40,10 @@ export function createChatController({ api, store, emitter }) {
 
   const loadLastConfig = () => { try { return JSON.parse(localStorage.getItem(LAST_KEY) || "null"); } catch { return null; } };
   const saveLastConfig = () => { const s = store.get(); localStorage.setItem(LAST_KEY, JSON.stringify({ agentId: s.agentId, controls: s.controls })); };
+
+  // Per-session "Allow always" map (see AUTO_KEY above).
+  const loadAutoMap = () => { try { return JSON.parse(localStorage.getItem(AUTO_KEY) || "{}") || {}; } catch { return {}; } };
+  const isAutoAllow = (id) => !!loadAutoMap()[id];
 
   // Build an agent's control values from its declared defaults, then layer on the
   // last-used controls for that agent, then any explicit overrides.
@@ -220,10 +228,16 @@ export function createChatController({ api, store, emitter }) {
       const agentId = s.agentId || st.agentId;
       const agent = st.agents.find((a) => a.id === agentId);
       const unreadIds = { ...st.unreadIds }; delete unreadIds[id];
-      return { activeId: id, activeSession: s, agentId, unreadIds, controls: normalizeControls(agent, { ...defaultsFor(agent), ...(s.controls || {}) }), files: { received: [], uploaded: [] } };
+      return { activeId: id, activeSession: s, agentId, unreadIds, autoAllow: isAutoAllow(id), controls: normalizeControls(agent, { ...defaultsFor(agent), ...(s.controls || {}) }), files: { received: [], uploaded: [] } };
     });
     saveLastConfig(); // the session you're on becomes the default for new chats
     emitter.emit("historyLoaded", s.messages);
+    // Optimistic live-turn paint: the fetched session carries the in-progress
+    // turn's parts (and busy flag), so what streamed while away is on screen
+    // immediately — no waiting for the resync round trip. The resync snapshot
+    // below is still requested and REPLACES this render when it lands: it's
+    // published into the ordered stream, so it can't miss or duplicate deltas.
+    if ((s.parts && s.parts.length) || s.busy) emitter.emit("snapshot", { parts: s.parts || [], busy: !!s.busy });
     requestResync(id);
   }
 
@@ -265,6 +279,10 @@ export function createChatController({ api, store, emitter }) {
     sessionCache.delete(id);
     outbox.delete(id);
     sendChain.delete(id);
+    // Drop the session's "Allow always" entry so a future session reusing the
+    // map never inherits it.
+    const auto = loadAutoMap();
+    if (auto[id]) { delete auto[id]; localStorage.setItem(AUTO_KEY, JSON.stringify(auto)); }
     store.set((s) => { const u = { ...s.unreadIds }; delete u[id]; return { unreadIds: u }; });
     await api.deleteSession(id);
     await refreshSessions();
@@ -422,9 +440,14 @@ export function createChatController({ api, store, emitter }) {
     saveLastConfig();
   }
 
-  // Toggle the global "Allow always" switch (persisted; read on the next permission).
+  // Toggle "Allow always" for the ACTIVE session only (persisted; read on the
+  // next permission). Other sessions keep their own setting (default: off).
   function setAutoAllow(on) {
-    localStorage.setItem(AUTO_KEY, on ? "1" : "");
+    const id = store.get().activeId;
+    if (!id) return;
+    const map = loadAutoMap();
+    if (on) map[id] = 1; else delete map[id];
+    localStorage.setItem(AUTO_KEY, JSON.stringify(map));
     store.set({ autoAllow: !!on });
   }
 

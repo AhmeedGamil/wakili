@@ -390,8 +390,15 @@ body {
 .tool-head:hover { background: var(--hover); }
 /* collapsed: clamp the title to 1 row so a long path never grows the card;
    opening the card reveals it in full */
-.tool-title { flex: 1; min-width: 0; overflow-wrap: anywhere; font-weight: 600; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; }
-.tool-card.open .tool-title { -webkit-line-clamp: unset; overflow: visible; }
+/* Collapsed: ONE line with a trailing ellipsis. nowrap (not line-clamp) so a
+   long unbreakable path/command can never wrap wholesale onto a hidden second
+   line and leave the visible line as just "Edit ·…". */
+.tool-title { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tool-card.open .tool-title { white-space: normal; overflow: visible; overflow-wrap: anywhere; }
+/* When the header's summary IS the command (codex shell runs), the open card
+   keeps the one-line ellipsis — the body prints the full command + output, so
+   an expanded header would just duplicate it. */
+.tool-card.open.cmd-head .tool-title { white-space: nowrap; overflow: hidden; }
 /* summary caption BELOW the card (outside its border); hidden when there's nothing */
 .tool-badge { margin: 5px 0 0 4px; color: var(--muted); font-size: 12px; font-weight: 500; text-align: left; }
 .tool-badge:empty { display: none; }
@@ -423,8 +430,9 @@ body {
 .msg.ask { background: var(--panel); border: 1px solid var(--accent); border-radius: 16px; padding: 12px 14px; }
 .ask-tag { display: inline-block; font-size: 10.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--accent); margin-bottom: 4px; }
 .ask-q { font-weight: 600; margin-bottom: 10px; }
-/* question tabs: one per question, only the active one's options are shown */
-.ask-tabs { display: flex; gap: 4px; margin-bottom: 12px; overflow-x: auto; padding-bottom: 2px; }
+/* question tabs: one per question, only the active one's options are shown.
+   Tabs WRAP onto extra rows — never a horizontal scrollbar. */
+.ask-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 12px; }
 .ask-tab { flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel-2); color: var(--muted); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; white-space: nowrap; }
 .ask-tab.on { color: var(--text); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .ask-tab.done::after { content: "✓"; color: var(--accent); font-size: 11px; font-weight: 700; }
@@ -574,7 +582,9 @@ body {
 .dock .card { display: flex; flex-direction: column; max-height: 60vh; background: var(--panel); border: 1px solid var(--accent); border-radius: 16px; padding: 12px 14px; box-shadow: 0 8px 30px rgba(0,0,0,.35); }
 /* head + actions stay pinned; only this region scrolls */
 .dock .perm-head { flex: none; }
-.dock .perm-scroll, .dock .ask-pane { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin-bottom: 10px; }
+/* Long content stays reachable by touch/wheel, but without scrollbar chrome. */
+.dock .perm-scroll, .dock .ask-pane { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin-bottom: 10px; scrollbar-width: none; }
+.dock .perm-scroll::-webkit-scrollbar, .dock .ask-pane::-webkit-scrollbar { display: none; }
 .dock .perm-scroll .perm-body { max-height: none; overflow: visible; margin: 0; }
 .dock .perm-body.diff { background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; }
 .dock .perm-actions { flex: none; justify-content: center; }

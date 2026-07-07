@@ -231,6 +231,7 @@ export const codexAgent = {
 };
 
 // Codex event -> Claude-shaped gateway event.
+let toolSeq = 0; // fallback tool_use id when a codex item carries none
 function translate(evt, onEvent) {
   if (evt.type === "thread.started" && evt.thread_id) {
     // carry the resume id the same way Claude's `result.session_id` does
@@ -241,12 +242,24 @@ function translate(evt, onEvent) {
     const item = evt.item;
     if (item.type === "agent_message" && typeof item.text === "string") {
       onEvent({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: item.text } } });
+    } else if (item.type === "command_execution") {
+      // Shell runs render like a Bash card (matching the Android app): the
+      // command alone as the input — so it shows in the card header — and the
+      // captured output delivered as a tool_result so it attaches to the card
+      // body, error-tinted when the command failed.
+      const id = item.id || `codex-tool-${++toolSeq}`;
+      onEvent({ type: "assistant", message: { content: [{ type: "tool_use", name: item.type, input: { command: item.command || "" }, id }] } });
+      const out = item.aggregated_output ?? item.output ?? "";
+      const isError = item.exit_code != null && item.exit_code !== 0;
+      if (out || isError) {
+        onEvent({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, content: String(out), is_error: isError }] } });
+      }
     } else if (item.type !== "reasoning") {
-      // command runs, file edits, etc. -> show as a tool chip. MCP calls carry
+      // file edits, web searches, etc. -> show as a tool chip. MCP calls carry
       // the real tool name (send_to_user, ask_options) — surface that, not
       // the generic "mcp_tool_call".
       const name = item.type === "mcp_tool_call" ? (item.tool || item.type) : (item.type || "item");
-      onEvent({ type: "assistant", message: { content: [{ type: "tool_use", name, input: item }] } });
+      onEvent({ type: "assistant", message: { content: [{ type: "tool_use", name, input: item, id: item.id }] } });
     }
   }
 }

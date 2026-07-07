@@ -24,7 +24,8 @@ import { maybeShowGuide, showGuide } from "./components/Guide.js";
 const THEME_KEY = "ra-theme";
 const ACCENT_KEY = "ra-accent";
 
-const store = createStore({ sessions: [], activeId: null, activeSession: null, agents: [], agentId: "claude", controls: {}, busyIds: {}, queued: {}, unreadIds: {}, autoAllow: !!localStorage.getItem("ra-auto-allow"), files: { received: [], uploaded: [] }, allFiles: [], power: { platform: "", keepAwake: false }, autostart: { supported: false, on: false } });
+// autoAllow is per-session; applySession loads the active session's value.
+const store = createStore({ sessions: [], activeId: null, activeSession: null, agents: [], agentId: "claude", controls: {}, busyIds: {}, queued: {}, unreadIds: {}, autoAllow: false, files: { received: [], uploaded: [] }, allFiles: [], power: { platform: "", keepAwake: false }, autostart: { supported: false, on: false } });
 const emitter = createEmitter();
 const controller = createChatController({ api, store, emitter });
 
@@ -283,6 +284,9 @@ emitter.on("historyLoaded", (msgs) => {
   messageList.renderHistory(msgs);
   // In-flight/failed sends for this session render after its history.
   for (const entry of controller.getOutbox(store.get().activeId)) renderOutboxEntry(entry);
+  // Outbox rows belong above the live-turn boundary: a snapshot REPLACES
+  // everything below the boundary, and an unsent message must survive that.
+  messageList.markLive();
   // Restore where you were scrolled to (falls back to the bottom).
   const st = uiState.get(store.get().activeId);
   if (st && st.scrollTop != null) messageList.el.scrollTop = st.scrollTop;

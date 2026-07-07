@@ -66,7 +66,24 @@ function headLabel(name, input) {
   // Any other tool that carries a human description (PowerShell, MCP tools, …)
   // surfaces it like Bash does, instead of showing a bare name.
   const d = obj && typeof obj.description === "string" ? obj.description.trim() : "";
-  return d ? name + " · " + d : name;
+  if (d) return name + " · " + d;
+  // No path or description but a command (codex command_execution): show the
+  // command in the header, like the Android app's card.
+  const c = obj && typeof obj.command === "string" ? obj.command.trim() : "";
+  return c ? name + " · " + c : name;
+}
+
+// True when headLabel() fell back to the command (codex shell runs): the header
+// already shows it, so the OPEN card keeps its one-line clamp instead of
+// ballooning into the same command the body prints anyway (see .cmd-head CSS).
+function headUsesCommand(name, input) {
+  const obj = input && typeof input === "object" ? input : null;
+  if (!obj || typeof obj.command !== "string" || !obj.command.trim()) return false;
+  if (name === "Bash") return false; // Bash headers show the description, never the command
+  if ((name === "Grep" || name === "Glob") && obj.pattern) return false;
+  if (fileOf(input)) return false;
+  if (typeof obj.description === "string" && obj.description.trim()) return false;
+  return true;
 }
 
 // A short "what happened" summary shown at the right of the header. Edit/Write
@@ -132,7 +149,7 @@ export function toolCard(name, input, { open = false, output = null, isError = f
   // badges are hidden via CSS. data-tool lets attachOutput fill an output-based
   // badge later (Read/Grep/Glob), whose result isn't known at render time.
   const badge = el("div", { class: "tool-badge", text: badgeText(name, input, output) });
-  const card = el("div", { class: "tool-card" + (open ? " open" : ""), "data-tool": name }, head, body);
+  const card = el("div", { class: "tool-card" + (open ? " open" : "") + (headUsesCommand(name, input) ? " cmd-head" : ""), "data-tool": name }, head, body);
   head.addEventListener("click", () => {
     const hidden = body.hasAttribute("hidden");
     if (hidden) body.removeAttribute("hidden"); else body.setAttribute("hidden", "");

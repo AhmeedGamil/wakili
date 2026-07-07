@@ -131,11 +131,28 @@ export function createDock({ onPermission, onAnswerQuestion, onArchive, onActive
     const tabs = [];    // tab button per question
     let activeIdx = 0;
 
-    const sendBtn = el("button", { class: "btn allow ask-send", type: "button", onClick: () => submit() }, "Send answers");
+    // Multi-question cards: the button is ALWAYS clickable — "Next" steps to the
+    // next unanswered question until everything is answered, then it becomes
+    // "Send answers". Single-question cards keep the plain submit button.
+    const sendBtn = el("button", { class: "btn allow ask-send", type: "button", onClick: () => advance() }, "Send answers");
 
     function refresh() {
       tabs.forEach((t, i) => { t.classList.toggle("on", i === activeIdx); t.classList.toggle("done", !!answered(i)); });
-      sendBtn.disabled = !state.every((_, i) => answered(i));
+      const all = state.every((_, i) => answered(i));
+      if (multi) {
+        sendBtn.disabled = false;
+        sendBtn.textContent = all ? "Send answers" : "Next";
+      } else {
+        sendBtn.disabled = !all;
+      }
+    }
+    function advance() {
+      if (state.every((_, i) => answered(i))) return submit();
+      // jump to the next unanswered question, searching forward from the active tab
+      for (let k = 1; k <= questions.length; k++) {
+        const j = (activeIdx + k) % questions.length;
+        if (!answered(j)) return showTab(j);
+      }
     }
     function showTab(i) {
       activeIdx = i;

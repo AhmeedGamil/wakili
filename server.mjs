@@ -100,13 +100,26 @@ const IMG_RE = /\.(png|jpe?g|gif|webp|svg|bmp|heic)$/i;
 const FILES_LOG = path.join(config.runtimeDir, "files.json");
 let filesLog = [];
 try { filesLog = JSON.parse(fsSync.readFileSync(FILES_LOG, "utf8")); } catch { filesLog = []; }
+// Backfill for entries saved before `path` was persisted (they lost their disk
+// location across restarts). Uploads are recoverable: the disk filename is
+// `<uuid>-<name>`, so re-link when exactly one candidate matches the name.
+try {
+  const disk = fsSync.readdirSync(config.uploadsDir);
+  let relinked = false;
+  for (const f of filesLog) {
+    if (!f || f.path || !f.name) continue;
+    const matches = disk.filter((d) => d.endsWith(`-${f.name}`));
+    if (matches.length === 1) { f.path = path.join(config.uploadsDir, matches[0]); relinked = true; }
+  }
+  if (relinked) fsSync.writeFileSync(FILES_LOG, JSON.stringify(filesLog));
+} catch { /* uploads dir doesn't exist yet */ }
 // Re-arm download tokens from the saved registry so links keep working post-restart.
 for (const f of filesLog) if (f.token && f.path) files.set(f.token, { path: f.path, name: f.name });
 function saveFilesLog() { fsp.writeFile(FILES_LOG, JSON.stringify(filesLog)).catch(() => {}); }
 function recordFile({ sessionId, source, filePath, name, caption }) {
   const token = crypto.randomUUID();
   files.set(token, { path: filePath, name });
-  filesLog.push({ token, sessionId, source, name, caption: caption || "", image: IMG_RE.test(name), url: `/api/files/${token}` });
+  filesLog.push({ token, sessionId, source, name, path: filePath, caption: caption || "", image: IMG_RE.test(name), url: `/api/files/${token}` });
   saveFilesLog();
   return token;
 }
@@ -330,7 +343,11 @@ const server = http.createServer(async (req, res) => {
       const id = mm[1];
       if (m === "GET") {
         const s = await sessionStore.get(id);
-        return s ? json(res, 200, withMeta(s)) : notFound(res);
+        // Include the in-progress turn's parts so a (re)opening client can paint
+        // the streamed-so-far content immediately instead of waiting a resync
+        // round trip. The resync snapshot stays authoritative (it's ordered with
+        // live events on the stream); the client replaces this copy when it lands.
+        return s ? json(res, 200, { ...withMeta(s), parts: activeTurns.get(id) || [] }) : notFound(res);
       }
       if (m === "PATCH") {
         const b = await readBody(req);

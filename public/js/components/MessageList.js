@@ -63,6 +63,12 @@ export function createMessageList() {
   // is matched to its card by tool id when known, else FIFO (tools in `-p` run
   // sequentially, so the oldest unfilled card is the right one).
   let awaiting = [];
+  // Boundary between rendered history (+ outbox rows) and the live in-progress
+  // turn. Everything after it belongs to the current turn, so a snapshot can
+  // REPLACE that region instead of appending — rendering twice (optimistic paint
+  // from the session fetch, then the authoritative resync snapshot) stays
+  // idempotent instead of duplicating the streamed content.
+  let liveMark = null;
 
   // Every insertion into the list goes through here so the persistent working
   // pulse stays pinned below whatever just arrived (appendChild MOVES it).
@@ -182,12 +188,38 @@ export function createMessageList() {
       else if (m.parts) renderParts(m.parts);
       else if (m.text) assistantMessage(m.text);
     }
+    markLive();
   }
 
-  // Restore the in-progress turn (sent on (re)entering a working session): append
-  // what streamed so far after the history, then resume the "working" pulse so the
-  // next live delta continues below it.
+  // (Re)place the history/live boundary at the current end of the list. Called
+  // after renderHistory, and again by main.js once outbox rows are rendered, so
+  // in-flight sends sit above the boundary and survive a snapshot replace.
+  function markLive() {
+    if (!liveMark) liveMark = document.createComment("live-boundary");
+    root.appendChild(liveMark); // appendChild MOVES it if already in the list
+    if (workingEl) root.appendChild(workingEl); // pulse stays pinned last
+  }
+
+  // Wipe the live region (everything after the boundary, except the working
+  // pulse) and reset streaming state, so the caller can re-render the turn from
+  // an authoritative parts list without duplicating what's already on screen.
+  function clearLive() {
+    if (!liveMark || liveMark.parentNode !== root) return;
+    let n = liveMark.nextSibling;
+    while (n) { const next = n.nextSibling; if (n !== workingEl) n.remove(); n = next; }
+    // Open text/think blocks and pending tool cards lived in the wiped region.
+    tw.reset();
+    textEl = thinkEl = thinkSummary = thinkLabel = null;
+    awaiting = [];
+  }
+
+  // Restore the in-progress turn (sent on (re)entering a working session):
+  // REPLACE the live region with what streamed so far, then resume the "working"
+  // pulse so the next live delta continues below it. Replace (not append) keeps
+  // this idempotent — the optimistic paint from the session fetch and the
+  // authoritative resync snapshot(s) all converge on one copy.
   function renderSnapshot(parts, busy) {
+    clearLive();
     renderParts(parts || [], true);
     if (busy) showWorking();
     scroll();
@@ -322,5 +354,5 @@ export function createMessageList() {
     scroll();
   }
 
-  return { el: root, userMessage, addOutbox, renderHistory, renderSnapshot, startAssistant, feedText, feedThink, addTool, addToolResult, addRecord, endTurn, addStopped, addFile, addExec, setMarkdown };
+  return { el: root, userMessage, addOutbox, renderHistory, renderSnapshot, markLive, startAssistant, feedText, feedThink, addTool, addToolResult, addRecord, endTurn, addStopped, addFile, addExec, setMarkdown };
 }
