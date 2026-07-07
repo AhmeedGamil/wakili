@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="connect_title">Wakili</string>
+    <string name="connect_subtitle">Start the gateway on your computer, then scan the QR code it shows.</string>
+    <string name="connect_scan_qr">Scan QR code</string>
+    <string name="connect_scan_hint">Point at the QR code shown on your computer</string>
+    <string name="connect_cancel">Cancel</string>
+    <string name="connect_connecting">Connecting…</string>
+    <string name="connect_manual_hint">or type: http://192.168.1.10:8730/?t=…</string>
+    <string name="connect_go">Connect</string>
+    <string name="connect_error_invalid">That doesn\'t look like a gateway link — it must include the ?t= token.</string>
+    <string name="connect_error_unauthorized">The gateway refused the token. Scan the QR from the computer again.</string>
+    <string name="connect_error_unreachable">Can\'t reach the computer. Is the gateway running and the phone on the same network / VPN?</string>
+</resources>

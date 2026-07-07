@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="sessions_title">المحادثات</string>
+    <string name="sessions_disconnect">قطع الاتصال</string>
+    <string name="sessions_settings">الإعدادات</string>
+    <string name="sessions_files">الملفات</string>
+    <string name="sessions_select_project">اختر مشروعًا</string>
+    <string name="sessions_error">تعذّر تحميل المحادثات.</string>
+    <string name="sessions_retry">حاول مرة أخرى</string>
+    <string name="sessions_empty">لا توجد محادثات بعد — ستمتلئ هذه الشاشة في المرحلة القادمة.</string>
+    <string name="sessions_untitled">محادثة جديدة</string>
+    <string name="sessions_view_all">كل المحادثات</string>
+    <string name="sessions_view_project">حسب المشروع</string>
+    <string name="sessions_edit">تعديل المحادثة</string>
+    <string name="sessions_rename">إعادة تسمية</string>
+    <string name="sessions_delete">حذف</string>
+    <string name="sessions_pick_project">اختر مجلد المشروع</string>
+    <string name="sessions_roots">الأقراص والمجلد الرئيسي</string>
+    <string name="sessions_new_folder">اسم المجلد الجديد</string>
+    <string name="sessions_create">إنشاء</string>
+    <string name="sessions_use_folder">استخدام هذا المجلد</string>
+    <string name="sessions_stream_down">انقطع الاتصال المباشر — إذا استمر ذلك، أعد تشغيل البوابة على الكمبيوتر.</string>
+</resources>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="files_title">الملفات</string>
+    <string name="files_images">الصور</string>
+    <string name="files_files">الملفات</string>
+    <string name="files_by_you">أرفقتها أنت</string>
+    <string name="files_by_agent">أرسلها الوكيل</string>
+    <string name="files_empty_images">لا توجد صور بعد.</string>
+    <string name="files_empty_files">لا توجد ملفات بعد.</string>
+</resources>
