@@ -209,7 +209,7 @@ async function runTurn(session, text, controls, attachments, agentId) {
           for (const b of evt.message.content || []) if (b.type === "text") pushText(b.text);
         } else {
           // AskUserQuestion / ask_options render as their own interactive card, not a tool chip.
-          const skip = new Set(["AskUserQuestion", "mcp__remoteagent__ask_options"]);
+          const skip = new Set(["AskUserQuestion", "mcp__wakili__ask_options"]);
           // Keep the tool_use id so the matching tool_result (output) can attach to it.
           for (const b of evt.message.content || []) if (b.type === "tool_use" && !skip.has(b.name)) parts.push({ type: "tool", name: b.name, input: b.input, id: b.id });
         }
@@ -297,6 +297,10 @@ const server = http.createServer(async (req, res) => {
       if (reachable.cloudflare) { const u = new URL(reachable.cloudflare); out.push({ label: "Cloudflare", host: u.host, url: `${reachable.cloudflare.replace(/\/$/, "")}/cf.html?t=${config.token}` }); }
       return json(res, 200, out);
     }
+
+    // Identity for the phone app: lets it label a saved computer with its real
+    // name ("AHMED-PC") instead of a bare ip:port when the user adds it.
+    if (p === "/api/host" && m === "GET") return json(res, 200, { hostname: os.hostname(), platform: process.platform });
 
     // browse the laptop filesystem so the phone can pick a project folder
     if (p === "/api/folders" && m === "GET") return json(res, 200, await listFolders(url.searchParams.get("path")));
@@ -751,11 +755,19 @@ async function finishStoreRelocation() {
 
 server.listen(config.port, async () => {
   await finishStoreRelocation();
-  const ips = Object.values(os.networkInterfaces())
-    .flat()
-    .filter((n) => n && n.family === "IPv4" && !n.internal)
+  // LAN = addresses a phone on the same network could actually reach. Virtual /
+  // overlay adapters are excluded: Tailscale's CGNAT range (100.64.0.0/10)
+  // would appear mislabeled as "Local network" (Tailscale already gets its own
+  // entry), and link-local 169.254.x.x means the adapter never got a real
+  // address — a connection row that can't work.
+  const VIRTUAL_IF = /tailscale|zerotier|vethernet|wsl|virtualbox|vmware|hyper-v|docker|loopback/i;
+  const isCgnat = (a) => { const m = /^100\.(\d+)\./.exec(a); return !!m && +m[1] >= 64 && +m[1] <= 127; };
+  const ips = Object.entries(os.networkInterfaces())
+    .filter(([name]) => !VIRTUAL_IF.test(name))
+    .flatMap(([, nets]) => nets || [])
+    .filter((n) => n && n.family === "IPv4" && !n.internal && !isCgnat(n.address) && !n.address.startsWith("169.254."))
     .map((n) => n.address);
-  reachable.lan = ips; // remember LAN addresses for the page's connection switcher
+  reachable.lan = ips; // remembered for the page's connection switcher
   // Keep the machine awake by default so remote turns aren't suspended by idle
   // sleep while you're away (the screen can still lock). Set WAKILI_KEEP_AWAKE=0
   // to opt out; toggle it live from the app.

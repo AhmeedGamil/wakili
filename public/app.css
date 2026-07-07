@@ -114,6 +114,9 @@ body {
 .ep-row:hover:not(.current) { background: var(--hover); }
 .ep-row.current { cursor: default; border-style: dashed; opacity: .75; }
 .ep-label { font-weight: 600; font-size: 14px; flex: none; }
+/* "Add or change the host" (phone app only): same row geometry, accent color */
+.ep-add { color: var(--accent); }
+.ep-add svg { width: 16px; height: 16px; flex: none; }
 .ep-host { flex: 1; color: var(--muted); font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ep-now { color: var(--accent); font-size: 12px; flex: none; }
 .ep-go { color: var(--muted); font-size: 16px; flex: none; }
@@ -493,6 +496,11 @@ body {
 .ti-dots span { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); animation: blink 1.2s infinite; }
 .ti-dots span:nth-child(2) { animation-delay: .2s; }
 .ti-dots span:nth-child(3) { animation-delay: .4s; }
+/* The working pulse hides in place: its row keeps its height (no layout shift
+   when it toggles mid-turn), fades over .15s, and the blink pauses while hidden. */
+.msg.working { transition: opacity .15s ease, visibility .15s; }
+.msg.working.off { opacity: 0; visibility: hidden; }
+.msg.working.off .ti-dots span { animation-play-state: paused; }
 /* thoughts live in the same centered column as .msg so they line up with the answer */
 .thoughts { max-width: var(--maxw); width: 100%; margin: 0 auto 8px; }
 .thoughts > summary { cursor: pointer; color: var(--muted); font-size: 13px; list-style: none; padding: 2px 0; }

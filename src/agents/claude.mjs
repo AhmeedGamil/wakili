@@ -189,7 +189,7 @@ fs.mkdirSync(config.runtimeDir, { recursive: true });
 fs.writeFileSync(
   SETTINGS_PATH,
   JSON.stringify({
-    permissions: { allow: ["mcp__remoteagent__send_to_user"] },
+    permissions: { allow: ["mcp__wakili__send_to_user"] },
     hooks: {
       PreToolUse: [
         {
@@ -204,42 +204,37 @@ fs.writeFileSync(
 // Our MCP server provides the agent's file-delivery tool.
 fs.writeFileSync(
   MCP_CONFIG_PATH,
-  JSON.stringify({ mcpServers: { remoteagent: { command: "node", args: [MCP_SERVER] } } }, null, 2)
+  JSON.stringify({ mcpServers: { wakili: { command: "node", args: [MCP_SERVER] } } }, null, 2)
 );
 
 // Maps the bridge's thinking levels to Claude's keyword triggers (appended to
 // the prompt; Claude turns them into a thinking-token budget internally).
 export const THINKING = { off: "", think: "think", think_hard: "think hard", ultrathink: "ultrathink" };
 
-// The model chats over a phone, so any question it wants the user to answer must
-// go through the ask_options MCP tool (renders tappable buttons + pauses the turn
-// for the reply). Left to itself the model tends to ask in plain prose, which the
-// phone can't turn into an interactive card — so we instruct it explicitly.
+// Phone directives. Their PRIMARY delivery channel is the MCP tool descriptions
+// in mcp-tools.mjs (seen by both Claude adapters upfront, invisible in the
+// transcript); the SDK adapter additionally appends PHONE_DIRECTIVE to its
+// system prompt as reinforcement, and the CLI adapter injects nothing. Codex
+// defers MCP tools behind its tool-search layer (descriptions aren't visible
+// until the model searches), so its adapter prepends PHONE_DIRECTIVE to the
+// FIRST message of each thread — see codex.mjs.
 export const ASK_DIRECTIVE =
   "The user is on a phone. Whenever you need them to make a choice, a decision, a confirmation, " +
-  "or to pick between options, you MUST call the ask_options tool (mcp__remoteagent__ask_options) " +
+  "or to pick between options, you MUST call the ask_options tool (mcp__wakili__ask_options) " +
   "with your question(s) and their options — never ask by writing the question as plain text. That " +
   "tool shows tappable buttons and pauses the turn until they answer, then returns their choice. Only " +
   "ask in plain prose for genuinely open-ended input that has no discrete options.";
 
-// The user is on a phone with no filesystem access, so a path in the reply is
-// useless to them — files must be pushed with send_to_user. The tool description
-// alone isn't a strong enough nudge, so we spell it out.
 export const SEND_DIRECTIVE =
   "The user is on a phone and cannot open files by path — a filesystem path in your reply is useless " +
   "to them. Whenever you create, build, generate, screenshot, or otherwise end up with a file the user " +
   "would want (an image, screenshot, APK/build artifact, PDF, log, or any generated file), you MUST " +
-  "call the send_to_user tool (mcp__remoteagent__send_to_user) with its absolute path to deliver it to " +
+  "call the send_to_user tool (mcp__wakili__send_to_user) with its absolute path to deliver it to " +
   "their phone. Do this proactively as soon as the file exists — do not wait to be asked, and never " +
   "just print the path and stop.";
 
-// Both phone directives combined, for the SDK (in-process `append`) and Codex
-// (rides stdin) adapters — channels with no Windows shell in the way, so the
-// spaces and newline are safe. It must NOT be fed to the CLI adapter's
-// `--append-system-prompt`: that spawns through cmd.exe (shell:true), where a
-// space word-splits the arg (only "The" survives) and a newline truncates the
-// command line, dropping later flags like --resume. The CLI adapter deliberately
-// uses the single-line ASK_DIRECTIVE instead.
+// Both phone directives combined — used only by the SDK adapter's in-process
+// systemPrompt `append` (no shell in the way, so multi-line is safe there).
 export const PHONE_DIRECTIVE = ASK_DIRECTIVE + "\n\n" + SEND_DIRECTIVE;
 
 export const claudeAgent = {
@@ -310,10 +305,12 @@ export const claudeAgent = {
       "--settings", SETTINGS_PATH,
       "--mcp-config", MCP_CONFIG_PATH,
       "--strict-mcp-config",
-      // Force questions through the reliable ask_options MCP tool: instruct the
-      // model to use it, and disable the built-in AskUserQuestion (whose headless
-      // answer-injection is a fragile deny-reason hack).
-      "--append-system-prompt", ASK_DIRECTIVE,
+      // Force questions through the reliable ask_options MCP tool by disabling
+      // the built-in AskUserQuestion (whose headless answer-injection is a
+      // fragile deny-reason hack). The "you MUST use ask_options / send_to_user"
+      // phone directives reach the model via the MCP tool descriptions in
+      // mcp-tools.mjs — no --append-system-prompt needed (which was Windows-
+      // hostile anyway: cmd.exe word-splits multi-line args under shell:true).
       "--disallowed-tools", "AskUserQuestion",
     ];
     if (controls.model) args.push("--model", controls.model);

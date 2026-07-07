@@ -1,34 +1,30 @@
-// Wakili — native shell around the remote-agent web UI.
+// Wakili — native shell around the wakili web UI.
 //
 // First run: scan the QR the gateway prints (it encodes http://<ip>:<port>/?t=<token>)
-// or type the address by hand. The URL is persisted; every later launch goes
-// straight into the web UI in a full-screen WebView. The web app itself captures
-// the ?t= token into localStorage (domStorageEnabled keeps it across launches).
+// or type the address by hand. The phone keeps a LIST of computers (each with
+// its own token) in AsyncStorage — see src/networks.js — so the user can save
+// home + work + laptop and switch between them without re-scanning. The active
+// one is shown full-screen in a WebView; the web app captures the ?t= token
+// into localStorage (domStorageEnabled keeps it across launches).
+//
+// Screens (src/components): ConnectScreen — THE hosts page (first-run setup,
+// unreachable-host recovery, and on-demand management via Settings →
+// Connection → "Add or change the host", where it overlays the live WebView so
+// the session stays mounted underneath), ScanScreen (QR camera),
+// LoadingOverlay ("Connecting to the host …").
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  ActivityIndicator,
-  BackHandler,
-  Image,
-  KeyboardAvoidingView,
-  Linking,
-  Platform,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from "react-native";
+import { ActivityIndicator, BackHandler, KeyboardAvoidingView, Linking, Platform, StyleSheet, Text, View } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import { CameraView, useCameraPermissions } from "expo-camera";
+import { useCameraPermissions } from "expo-camera";
 import { WebView } from "react-native-webview";
 
-const SERVER_KEY = "wakili.server";
-
-const looksLikeServerUrl = (s) => /^https?:\/\/\S+/i.test((s || "").trim());
+import { colors } from "./src/theme";
+import { loadNetworks, persist, upsert, probeName, looksLikeServerUrl, autoName } from "./src/networks";
+import { LoadingOverlay } from "./src/components/LoadingOverlay";
+import { ScanScreen } from "./src/components/ScanScreen";
+import { ConnectScreen } from "./src/components/ConnectScreen";
 
 export default function App() {
   return (
@@ -39,27 +35,104 @@ export default function App() {
 }
 
 function Root() {
-  const [server, setServer] = useState(null); // null = loading, "" = none saved
+  const [booted, setBooted] = useState(false);
+  const [nets, setNets] = useState([]);          // saved computers [{ id, name, url }]
+  const [activeId, setActiveId] = useState(null);
   const [scanning, setScanning] = useState(false);
-  const [manual, setManual] = useState("");
+  const [connectView, setConnectView] = useState(false); // computers page over the live session
   const [loadError, setLoadError] = useState("");
+  const [webLoading, setWebLoading] = useState(true);
   const [retry, setRetry] = useState(0);
   const [permission, requestPermission] = useCameraPermissions();
   const webRef = useRef(null);
   const canGoBackRef = useRef(false);
-  const scannedRef = useRef(false);
+  // Mirrors for async / event-listener callbacks that read the latest state.
+  const activeIdRef = useRef(null);
+  activeIdRef.current = activeId;
+  const connectViewRef = useRef(false);
+  connectViewRef.current = connectView;
+
+  const active = nets.find((n) => n.id === activeId) || null;
 
   useEffect(() => {
-    AsyncStorage.getItem(SERVER_KEY).then((v) => setServer(v || ""));
+    loadNetworks().then(({ networks, activeId: id }) => {
+      setNets(networks);
+      setActiveId(id);
+      setBooted(true);
+    });
   }, []);
 
-  // Android back button. Ask the web UI first: if it has an open surface (sidebar
-  // drawer, a list, a menu, a modal) it closes the top-most one and back stops
-  // there. It replies via onMessage; only when nothing was open do we fall back
-  // to WebView history, then exiting the app. The round-trip is async, so we
-  // consume the event here and act on the reply below.
+  // Apply + persist a networks change in one place.
+  const commit = (networks, nextActiveId) => {
+    setNets(networks);
+    setActiveId(nextActiveId);
+    persist(networks, nextActiveId).catch(() => {});
+  };
+
+  // Fresh WebView for the active computer (also used to retry the current one).
+  const reload = () => {
+    setLoadError("");
+    setConnectView(false);
+    setWebLoading(true);
+    setRetry((n) => n + 1);
+  };
+
+  // Connect to the selected host. Another one -> switch to it. The current
+  // one -> retry if it errored, otherwise just close the overlay (no reload).
+  const switchTo = (id) => {
+    if (id === activeId) {
+      if (loadError) reload();
+      else setConnectView(false);
+      return;
+    }
+    commit(nets, id);
+    reload();
+  };
+
+  // Add (or refresh) a computer by URL and make it active. The name starts as
+  // the URL's host; once the gateway answers /api/host it becomes the derived
+  // "<hostname>-<path>" label (ahmedpc-lan / ahmedpc-tailscale).
+  const addNetwork = (url) => {
+    const u = (url || "").trim();
+    if (!looksLikeServerUrl(u)) return;
+    const { networks, id } = upsert(nets, u);
+    commit(networks, id);
+    setScanning(false);
+    reload();
+    probeName(u).then((hostname) => {
+      if (!hostname) return;
+      setNets((cur) => {
+        const next = cur.map((n) => (n.id === id ? { ...n, name: autoName(n.url, hostname) } : n));
+        persist(next, activeIdRef.current).catch(() => {});
+        return next;
+      });
+    });
+  };
+
+  const removeNetwork = (id) => {
+    const next = nets.filter((n) => n.id !== id);
+    const nextActive = id === activeId ? (next.length ? next[0].id : null) : activeId;
+    commit(next, nextActive);
+    if (id === activeId) reload(); // removed the one we were on -> jump to the next
+  };
+
+  const startScan = useCallback(async () => {
+    if (!permission?.granted) {
+      const r = await requestPermission();
+      if (!r.granted) return;
+    }
+    setScanning(true);
+  }, [permission, requestPermission]);
+
+  // Android back button. The computers-page overlay closes first; otherwise ask
+  // the web UI: if it has an open surface (sidebar drawer, a list, a menu, a
+  // modal) it closes the top-most one and back stops there. It replies via
+  // onMessage; only when nothing was open do we fall back to WebView history,
+  // then exiting the app. The round-trip is async, so we consume the event here
+  // and act on the reply below.
   useEffect(() => {
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (connectViewRef.current) { setConnectView(false); return true; }
       if (!webRef.current) return false; // setup / scan screens: default behavior
       webRef.current.injectJavaScript(`(function(){
         var handled = false;
@@ -97,134 +170,49 @@ function Root() {
       Linking.openURL(msg.wakiliOpenUrl.url).catch(() => {});
       return;
     }
-  }, []);
-
-  const connect = useCallback((url) => {
-    const u = url.trim();
-    if (!looksLikeServerUrl(u)) return;
-    AsyncStorage.setItem(SERVER_KEY, u);
-    setLoadError("");
-    setScanning(false);
-    setServer(u);
-  }, []);
-
-  const startScan = useCallback(async () => {
-    scannedRef.current = false;
-    if (!permission?.granted) {
-      const r = await requestPermission();
-      if (!r.granted) return;
+    // Settings → Connection → "Saved computers": show the computers page over
+    // the live session (the WebView stays mounted underneath).
+    if (msg.wakiliNetworks) {
+      setConnectView(true);
+      return;
     }
-    setScanning(true);
-  }, [permission, requestPermission]);
-
-  const forget = useCallback(() => {
-    AsyncStorage.removeItem(SERVER_KEY);
-    setLoadError("");
-    setServer("");
   }, []);
 
-  if (server === null) {
+  if (!booted) {
     return (
       <View style={[styles.fill, styles.center]}>
         <StatusBar style="light" />
-        <ActivityIndicator color="#3b82f6" size="large" />
+        <ActivityIndicator color={colors.accent} size="large" />
+        <Text style={styles.bootText}>Starting Wakili…</Text>
       </View>
     );
   }
 
   if (scanning) {
-    return (
-      // Safe area around the whole page — otherwise the camera (and anything
-      // drawn over it) sits underneath the status bar.
-      <SafeAreaView style={styles.fill}>
-        <StatusBar style="light" />
-        <View style={styles.fill}>
-          <CameraView
-            style={StyleSheet.absoluteFill}
-            barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
-            onBarcodeScanned={({ data }) => {
-              if (scannedRef.current || !looksLikeServerUrl(data)) return;
-              scannedRef.current = true;
-              connect(data);
-            }}
-          />
-          <View style={styles.scanOverlay} pointerEvents="box-none">
-            <Text style={styles.scanHint}>
-              Point at the QR code shown on your computer
-            </Text>
-            <Pressable style={styles.btnGhost} onPress={() => setScanning(false)}>
-              <Text style={styles.btnGhostText}>Cancel</Text>
-            </Pressable>
-          </View>
-        </View>
-      </SafeAreaView>
-    );
+    return <ScanScreen onScanned={addNetwork} onCancel={() => setScanning(false)} />;
   }
 
-  if (!server || loadError) {
+  const connectPage = (showBack) => (
+    <ConnectScreen
+      networks={nets}
+      activeId={activeId}
+      error={loadError}
+      showBack={showBack}
+      onBack={() => setConnectView(false)}
+      onPick={switchTo}
+      onScan={startScan}
+      onManual={addNetwork}
+      onRemove={removeNetwork}
+    />
+  );
+
+  // No computer saved, or the active one failed to load: the computers page IS
+  // the screen (nothing usable behind it).
+  if (!active || loadError) {
     return (
       <SafeAreaView style={styles.fill}>
         <StatusBar style="light" />
-        <KeyboardAvoidingView behavior="padding" style={styles.fill}>
-          <ScrollView
-            style={styles.fill}
-            contentContainerStyle={[styles.center, styles.pad, styles.grow]}
-            keyboardShouldPersistTaps="handled"
-            showsVerticalScrollIndicator={false}
-          >
-          <Image source={require("./assets/splash-icon.png")} style={styles.logo} />
-          <Text style={styles.title}>Wakili</Text>
-          {loadError ? (
-            <Text style={styles.sub}>
-              Couldn't reach the computer ({loadError}). Is the gateway running and
-              the phone on the same network / VPN?
-            </Text>
-          ) : (
-            <Text style={styles.sub}>
-              Start the gateway on your computer, then scan the QR code it shows.
-            </Text>
-          )}
-          {loadError ? (
-            <Pressable
-              style={styles.btn}
-              onPress={() => {
-                setLoadError("");
-                setRetry((n) => n + 1);
-              }}
-            >
-              <Text style={styles.btnText}>Try again</Text>
-            </Pressable>
-          ) : null}
-          <Pressable style={styles.btn} onPress={startScan}>
-            <Text style={styles.btnText}>Scan QR code</Text>
-          </Pressable>
-          {loadError ? (
-            <Pressable style={styles.btnGhost} onPress={forget}>
-              <Text style={styles.btnGhostText}>Connect to a different computer</Text>
-            </Pressable>
-          ) : null}
-          <View style={styles.row}>
-            <TextInput
-              style={styles.input}
-              value={manual}
-              onChangeText={setManual}
-              placeholder="or type: http://192.168.1.10:8730/?t=..."
-              placeholderTextColor="#6b6b74"
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="url"
-              onSubmitEditing={() => connect(manual)}
-            />
-            <Pressable
-              style={[styles.btnSmall, !looksLikeServerUrl(manual) && styles.btnDisabled]}
-              disabled={!looksLikeServerUrl(manual)}
-              onPress={() => connect(manual)}
-            >
-              <Text style={styles.btnText}>Go</Text>
-            </Pressable>
-          </View>
-          </ScrollView>
-        </KeyboardAvoidingView>
+        {connectPage(false)}
       </SafeAreaView>
     );
   }
@@ -240,97 +228,48 @@ function Root() {
         behavior={Platform.OS === "android" ? "padding" : undefined}
         style={styles.fill}
       >
-      <WebView
-        ref={webRef}
-        key={`${server}#${retry}`}
-        source={{ uri: server }}
-        style={styles.web}
-        originWhitelist={["*"]}
-        domStorageEnabled
-        javaScriptEnabled
-        allowsBackForwardNavigationGestures
-        pullToRefreshEnabled
-        setSupportMultipleWindows={false}
-        overScrollMode="never"
-        setBuiltInZoomControls={false}
-        setDisplayZoomControls={false}
-        textZoom={100}
-        applicationNameForUserAgent="WakiliApp"
-        onNavigationStateChange={(nav) => {
-          canGoBackRef.current = nav.canGoBack;
-        }}
-        onMessage={(e) => onWebMessage(e.nativeEvent.data)}
-        onError={({ nativeEvent }) =>
-          setLoadError(nativeEvent.description || "network error")
-        }
-        onHttpError={({ nativeEvent }) => {
-          if (nativeEvent.statusCode >= 500) setLoadError(`HTTP ${nativeEvent.statusCode}`);
-        }}
-        renderLoading={() => (
-          <View style={[StyleSheet.absoluteFill, styles.center, { backgroundColor: "#18181b" }]}>
-            <ActivityIndicator color="#3b82f6" size="large" />
-          </View>
-        )}
-        startInLoadingState
-      />
+        <WebView
+          ref={webRef}
+          key={`${active.url}#${retry}`}
+          source={{ uri: active.url }}
+          style={styles.web}
+          originWhitelist={["*"]}
+          domStorageEnabled
+          javaScriptEnabled
+          allowsBackForwardNavigationGestures
+          pullToRefreshEnabled
+          setSupportMultipleWindows={false}
+          overScrollMode="never"
+          setBuiltInZoomControls={false}
+          setDisplayZoomControls={false}
+          textZoom={100}
+          applicationNameForUserAgent="WakiliApp"
+          onNavigationStateChange={(nav) => {
+            canGoBackRef.current = nav.canGoBack;
+          }}
+          onMessage={(e) => onWebMessage(e.nativeEvent.data)}
+          onLoadStart={() => setWebLoading(true)}
+          onLoadEnd={() => setWebLoading(false)}
+          onError={({ nativeEvent }) => {
+            setWebLoading(false);
+            setLoadError(nativeEvent.description || "network error");
+          }}
+          onHttpError={({ nativeEvent }) => {
+            if (nativeEvent.statusCode >= 500) setLoadError(`HTTP ${nativeEvent.statusCode}`);
+          }}
+        />
+        {webLoading ? <LoadingOverlay name={active.name} /> : null}
+        {connectView ? (
+          <View style={StyleSheet.absoluteFill}>{connectPage(true)}</View>
+        ) : null}
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  fill: { flex: 1, backgroundColor: "#18181b" },
+  fill: { flex: 1, backgroundColor: colors.bg },
   center: { alignItems: "center", justifyContent: "center" },
-  grow: { flexGrow: 1 },
-  pad: { padding: 24 },
-  web: { flex: 1, backgroundColor: "#18181b" },
-  logo: { width: 96, height: 96, marginBottom: 12 },
-  title: { color: "#ececec", fontSize: 28, fontWeight: "700", marginBottom: 8 },
-  sub: { color: "#a0a0aa", fontSize: 15, textAlign: "center", marginBottom: 24, lineHeight: 22 },
-  btn: {
-    backgroundColor: "#3b82f6",
-    borderRadius: 12,
-    paddingVertical: 14,
-    paddingHorizontal: 32,
-    marginBottom: 12,
-    alignSelf: "stretch",
-    alignItems: "center",
-  },
-  btnSmall: {
-    backgroundColor: "#3b82f6",
-    borderRadius: 10,
-    paddingVertical: 12,
-    paddingHorizontal: 18,
-    marginLeft: 8,
-  },
-  btnDisabled: { opacity: 0.4 },
-  btnText: { color: "#fff", fontSize: 16, fontWeight: "600" },
-  btnGhost: { padding: 14, alignItems: "center" },
-  btnGhostText: { color: "#a0a0aa", fontSize: 15 },
-  row: { flexDirection: "row", alignItems: "center", alignSelf: "stretch", marginTop: 8 },
-  input: {
-    flex: 1,
-    backgroundColor: "#242428",
-    borderRadius: 10,
-    color: "#ececec",
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 14,
-  },
-  scanOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    justifyContent: "flex-end",
-    alignItems: "center",
-    paddingBottom: 48,
-  },
-  scanHint: {
-    color: "#fff",
-    fontSize: 16,
-    textAlign: "center",
-    backgroundColor: "rgba(0,0,0,.55)",
-    paddingVertical: 10,
-    paddingHorizontal: 18,
-    borderRadius: 12,
-    marginBottom: 16,
-  },
+  web: { flex: 1, backgroundColor: colors.bg },
+  bootText: { color: colors.muted, fontSize: 14, marginTop: 14 },
 });

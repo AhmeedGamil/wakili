@@ -13,12 +13,19 @@ const TOKEN = process.env.WAKILI_TOKEN || "";
 
 const send = (msg) => process.stdout.write(JSON.stringify(msg) + "\n");
 
+// The tool descriptions double as the phone directives: they are the one channel
+// every client (Claude CLI, Claude SDK, Codex) reliably puts in front of the
+// model, without polluting the prompt text — so the "user is on a phone, you
+// MUST ..." instructions live HERE, not in per-adapter prompt injection.
 const SEND_TOOL = {
   name: "send_to_user",
   description:
     "Send a file (image, APK, PDF, screenshot, anything) directly to the user's phone. " +
-    "Pass an absolute path to a file that already exists on disk. Use this whenever the " +
-    "user asks you to send, show, or deliver a file to them.",
+    "The user is chatting from a phone with NO filesystem access — a file path printed " +
+    "in your reply is useless to them. Whenever you create, build, generate, screenshot, " +
+    "or otherwise end up with a file the user would want, you MUST call this tool with " +
+    "the file's absolute path to deliver it. Do it proactively as soon as the file " +
+    "exists — do not wait to be asked, and never just print the path and stop.",
   inputSchema: {
     type: "object",
     properties: {
@@ -32,11 +39,13 @@ const SEND_TOOL = {
 const ASK_TOOL = {
   name: "ask_options",
   description:
-    "Ask the user one or more multiple-choice questions and WAIT for their answer. Use this " +
-    "whenever you'd otherwise ask the user to choose between options — it shows tappable buttons " +
-    "on their phone instead of a plain-text question. An 'Other' choice with a free-text box is " +
-    "added to every question automatically, so the user can always type a custom answer. Returns " +
-    "the user's selections; the turn pauses until they respond.",
+    "Ask the user one or more multiple-choice questions and WAIT for their answer. The user is " +
+    "on a phone: whenever you need them to make a choice, a decision, a confirmation, or to pick " +
+    "between options, you MUST use this tool — never ask by writing the question as plain text, " +
+    "because the phone cannot turn prose into an interactive card. It shows tappable buttons and " +
+    "pauses the turn until they answer, then returns their choice. An 'Other' choice with a " +
+    "free-text box is added to every question automatically, so the user can always type a custom " +
+    "answer. Only ask in plain prose for genuinely open-ended input that has no discrete options.",
   inputSchema: {
     type: "object",
     properties: {

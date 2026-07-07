@@ -87,14 +87,14 @@ export const claudeSdkAgent = {
           // Reuse the existing stdio MCP server (send_to_user + ask_options); it
           // needs the per-turn session/gateway/token via env, like the CLI path.
           mcpServers: {
-            remoteagent: {
+            wakili: {
               type: "stdio", command: "node", args: [MCP_SERVER],
               env: { ...process.env, WAKILI_SESSION: sessionId, WAKILI_GATEWAY: gatewayUrl, WAKILI_TOKEN: config.token },
             },
           },
           canUseTool: async (toolName, input) => {
             // Our own MCP tools handle their phone interaction internally — never gate them.
-            if (toolName.startsWith("mcp__remoteagent__")) return { behavior: "allow", updatedInput: input };
+            if (toolName.startsWith("mcp__wakili__")) return { behavior: "allow", updatedInput: input };
             const { decision, reason } = await askPermission(gatewayUrl, sessionId, toolName, input);
             if (decision === "allow") return { behavior: "allow", updatedInput: input };
             return { behavior: "deny", message: reason || "Denied on phone (or timed out)" };

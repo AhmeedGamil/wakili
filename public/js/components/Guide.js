@@ -45,6 +45,10 @@ export function showGuide(steps, { onEnd } = {}) {
     }, 320);
   }
 
+  // Keeps the spotlight glued to a target whose size settles late (the
+  // Connection tab's endpoint list arrives from a fetch after the step shows).
+  let ro = null;
+
   function place() {
     const s = steps[i];
     const target = s.target();
@@ -53,6 +57,15 @@ export function showGuide(steps, { onEnd } = {}) {
     text.append(...(typeof s.body === "string" ? [document.createTextNode(s.body)] : s.body()));
     dots.replaceChildren(...steps.map((_, k) => el("span", { class: "guide-dot" + (k === i ? " on" : "") })));
     nextBtn.textContent = i === steps.length - 1 ? "Done" : "Next";
+    if (ro) { ro.disconnect(); ro = null; }
+    position(target);
+    if (target && typeof ResizeObserver !== "undefined") {
+      ro = new ResizeObserver(() => position(target));
+      ro.observe(target);
+    }
+  }
+
+  function position(target) {
     const r = target ? target.getBoundingClientRect() : null;
     const cw = Math.min(320, window.innerWidth - 24);
     card.style.width = cw + "px";
@@ -74,6 +87,7 @@ export function showGuide(steps, { onEnd } = {}) {
   }
 
   function end() {
+    if (ro) { ro.disconnect(); ro = null; }
     localStorage.setItem(KEY, "1");
     overlay.remove();
     document.body.classList.remove("nav-open");

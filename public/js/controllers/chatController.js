@@ -7,7 +7,7 @@ import { parseClaudeEvent } from "../core/streamParser.js";
 // Tools gated by the permission hook — their permission card already shows the
 // tool + input, so we suppress the redundant tool chip for them. AskUserQuestion
 // is shown as its own interactive question card, so it's suppressed here too.
-const GATED = new Set(["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "AskUserQuestion", "mcp__remoteagent__ask_options"]);
+const GATED = new Set(["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "AskUserQuestion", "mcp__wakili__ask_options"]);
 
 // The user's last-chosen permission mode, remembered as a global default so new
 // sessions open in the same posture (notes #5). Per-session changes still win.

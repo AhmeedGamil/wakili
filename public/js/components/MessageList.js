@@ -51,7 +51,10 @@ export function createMessageList() {
   // formatted (or not) consistently with the stored history and re-render on toggle.
   tw.setRenderer((node, full) => writeText(node, full));
 
-  let workingEl = null;   // neutral processing pulse
+  let workingEl = null;   // neutral processing pulse — ONE element per turn, kept
+                          // as the last child and shown/hidden via the "off" class
+                          // (visibility toggle) so its space is reserved and the
+                          // chat never shifts when it blinks in and out mid-turn.
   let textEl = null;      // current open answer block
   let thinkEl = null;     // current open thoughts body
   let thinkSummary = null;
@@ -61,7 +64,14 @@ export function createMessageList() {
   // sequentially, so the oldest unfilled card is the right one).
   let awaiting = [];
 
-  function reset() { tw.reset(); workingEl = textEl = thinkEl = thinkSummary = thinkLabel = null; awaiting = []; }
+  // Every insertion into the list goes through here so the persistent working
+  // pulse stays pinned below whatever just arrived (appendChild MOVES it).
+  function append(node) {
+    root.appendChild(node);
+    if (workingEl) root.appendChild(workingEl);
+  }
+
+  function reset() { tw.reset(); removeWorking(); textEl = thinkEl = thinkSummary = thinkLabel = null; awaiting = []; }
 
   // Register a freshly-rendered tool card so a later tool_result can fill it.
   function registerToolCard(node, id) {
@@ -86,13 +96,13 @@ export function createMessageList() {
   // each render as an independent card, then the text as its own bubble.
   function userMessage(m) {
     const { text, attachments } = typeof m === "string" ? { text: m, attachments: [] } : { text: m.text || "", attachments: m.attachments || [] };
-    for (const a of attachments) root.appendChild(attachmentCard(a));
-    if (text) root.appendChild(el("div", { class: "msg user" }, writeText(el("div", { class: "bubble" }), text)));
+    for (const a of attachments) append(attachmentCard(a));
+    if (text) append(el("div", { class: "msg user" }, writeText(el("div", { class: "bubble" }), text)));
     stick = true; // sending a message always jumps to the bottom
     scroll();
   }
   function assistantMessage(text) {
-    root.appendChild(el("div", { class: "msg assistant" }, writeText(el("div", { class: "text" }), text)));
+    append(el("div", { class: "msg assistant" }, writeText(el("div", { class: "text" }), text)));
     scroll();
   }
   // An in-flight (or failed) send from the outbox: the message visuals plus a
@@ -100,7 +110,7 @@ export function createMessageList() {
   // when the server accepts it. Returns a handle the controller drives.
   function addOutbox({ text, attachments, status, onRetry, onDiscard }) {
     const nodes = [];
-    const add = (n) => { nodes.push(n); root.appendChild(n); };
+    const add = (n) => { nodes.push(n); append(n); };
     for (const a of attachments || []) add(attachmentCard(a));
     if (text) add(el("div", { class: "msg user" }, writeText(el("div", { class: "bubble" }), text)));
     const label = el("span", { class: "ob-label" });
@@ -115,7 +125,7 @@ export function createMessageList() {
     const update = (st) => {
       if (st === "sent") { row.remove(); return; }
       const failed = st === "failed";
-      if (failed) hideWorking();
+      if (failed) removeWorking(); // no turn will start — drop it, don't hold space
       row.hidden = !failed && !hasFiles;
       label.textContent = failed ? "Not sent" : "Sending…";
       row.classList.toggle("failed", failed);
@@ -136,19 +146,19 @@ export function createMessageList() {
   // static renderers for stored history parts
   function staticTool(name, input, output, isError) {
     const node = el("div", { class: "msg assistant" }, renderTool(name, input, { output, isError }));
-    root.appendChild(node);
+    append(node);
     return node;
   }
   function staticThink(text) {
-    root.appendChild(el("details", { class: "thoughts" }, el("summary", {}, icon("bulb"), el("span", { text: "Thoughts" })), writeText(el("div", { class: "think-body" }), text)));
+    append(el("details", { class: "thoughts" }, el("summary", {}, icon("bulb"), el("span", { text: "Thoughts" })), writeText(el("div", { class: "think-body" }), text)));
   }
   // History replay of an agent-sent file. When the stored part carries a url
   // (new sends do), render it just like the live addFile: a thumbnail for images,
   // a download link otherwise. Older parts without a url fall back to a name card.
   function staticFile(p) {
-    // Direct append (no `segment`, which would add a live "working" pulse).
-    if (p.url) { root.appendChild(fileCard({ name: p.name || "file", url: p.url, caption: p.caption })); return; }
-    root.appendChild(el("div", { class: "msg assistant" }, el("div", { class: "tool" }, icon("paperclip"), el("span", { text: "sent: " + (p.name || "file") }))));
+    // Direct append (no `segment`, which would show the live "working" pulse).
+    if (p.url) { append(fileCard({ name: p.name || "file", url: p.url, caption: p.caption })); return; }
+    append(el("div", { class: "msg assistant" }, el("div", { class: "tool" }, icon("paperclip"), el("span", { text: "sent: " + (p.name || "file") }))));
   }
   // `live` marks an in-progress turn (snapshot replay): tool cards without output
   // yet are registered so a pending result can still attach when it arrives.
@@ -183,14 +193,19 @@ export function createMessageList() {
     scroll();
   }
 
+  // show/hide toggle the "off" class on ONE persistent element (space stays
+  // reserved → no layout shift); remove is for turn-terminal moments only.
   function showWorking() {
-    if (workingEl) return;
-    workingEl = el("div", { class: "msg assistant" },
-      el("div", { class: "ti-dots", html: "<span></span><span></span><span></span>" }));
-    root.appendChild(workingEl);
+    if (!workingEl) {
+      workingEl = el("div", { class: "msg assistant working" },
+        el("div", { class: "ti-dots", html: "<span></span><span></span><span></span>" }));
+      root.appendChild(workingEl);
+    }
+    workingEl.classList.remove("off");
     scroll();
   }
-  function hideWorking() { if (workingEl) { workingEl.remove(); workingEl = null; } }
+  function hideWorking() { if (workingEl) workingEl.classList.add("off"); }
+  function removeWorking() { if (workingEl) { workingEl.remove(); workingEl = null; } }
 
   // close the open text/think blocks so the next segment appends below them
   function closeSegments() {
@@ -201,11 +216,11 @@ export function createMessageList() {
   }
 
   // a non-text segment (tool/permission/file) just arrived: end current blocks,
-  // drop it in order, then show the pulse again (the model keeps working)
+  // drop it in order above the pulse, and make sure the pulse is visible again
+  // (the model keeps working)
   function segment(node) {
     closeSegments();
-    hideWorking();
-    root.appendChild(node);
+    append(node);
     showWorking();
     scroll();
   }
@@ -217,7 +232,7 @@ export function createMessageList() {
     if (thinkLabel) thinkLabel.textContent = "Thoughts"; // reasoning done, answering
     if (!textEl) {
       textEl = el("div", { class: "text" });
-      root.appendChild(el("div", { class: "msg assistant" }, textEl));
+      append(el("div", { class: "msg assistant" }, textEl));
     }
     tw.feed(textEl, t);
   }
@@ -228,7 +243,7 @@ export function createMessageList() {
       thinkLabel = el("span", { text: "Thinking…" });
       thinkSummary = el("summary", {}, icon("bulb"), thinkLabel);
       const body = el("div", { class: "think-body" });
-      root.appendChild(el("details", { class: "thoughts", open: "" }, thinkSummary, body));
+      append(el("details", { class: "thoughts", open: "" }, thinkSummary, body));
       thinkEl = body;
     }
     tw.feed(thinkEl, t);
@@ -278,13 +293,13 @@ export function createMessageList() {
   // when a queued message is about to go out; plain "Stopped" otherwise.
   function addStopped(interrupted) {
     closeSegments();
-    hideWorking();
+    removeWorking(); // turn is over — release the reserved space
     const label = interrupted ? "Interrupted" : "Stopped";
-    root.appendChild(el("div", { class: "msg assistant" }, el("div", { class: "stopped-note" }, icon("square"), el("span", { text: label }))));
+    append(el("div", { class: "msg assistant" }, el("div", { class: "stopped-note" }, icon("square"), el("span", { text: label }))));
     scroll();
   }
 
-  function endTurn() { tw.flush(); hideWorking(); reset(); }
+  function endTurn() { tw.flush(); reset(); } // reset removes the pulse
 
   // Flip Markdown formatting on/off and re-render every message already on screen
   // from its stored raw source (`__raw`), including any mid-stream text.
@@ -299,8 +314,8 @@ export function createMessageList() {
 
   // Output of a "!cmd" direct shell command (no agent) — a terminal-style block.
   function addExec({ output, ok }) {
-    closeSegments(); hideWorking();
-    root.appendChild(el("div", { class: "msg assistant" },
+    closeSegments(); removeWorking(); // standalone shell output, no turn running
+    append(el("div", { class: "msg assistant" },
       el("div", { class: "tool-card open" },
         el("div", { class: "tool-head" }, icon("terminal", "tool-ico"), el("span", { class: "tool-title", text: "Output" })),
         el("div", { class: "tool-body diff" }, el("pre", { class: "diff-out" + (ok ? "" : " err"), text: output || "(no output)" })))));

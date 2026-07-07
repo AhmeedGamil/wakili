@@ -110,6 +110,14 @@ function guideSteps() {
       body: "These are the ways your phone can reach this computer — same Wi-Fi, Tailscale, or Cloudflare. Tap one to switch whenever your network changes.",
     },
     {
+      // The row exists only inside the phone app (added via the native bridge),
+      // so a browser tour skips this step.
+      target: () => appearanceMenu.panel.querySelector(".ep-add"),
+      optional: true,
+      title: "Add or change the host",
+      body: "Opens the hosts page over your session: select another saved computer, scan a QR to add one, or remove one — without losing where you are.",
+    },
+    {
       before: () => appearanceMenu.openTab("device"),
       target: devRow(0),
       title: "Lock screen",

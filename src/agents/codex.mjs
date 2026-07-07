@@ -91,16 +91,16 @@ const MCP_SERVER = path.join(ROOT, "src", "mcp-tools.mjs").replace(/\\/g, "/");
 function mcpOverrides({ sessionId, gatewayUrl }) {
   const wrap = (v) => (config.isWin && /\s/.test(v) ? `"${v}"` : v);
   return [
-    "-c", wrap("mcp_servers.remoteagent.command='node'"),
-    "-c", wrap(`mcp_servers.remoteagent.args=['${MCP_SERVER}']`),
-    "-c", wrap(`mcp_servers.remoteagent.env.WAKILI_SESSION='${sessionId}'`),
-    "-c", wrap(`mcp_servers.remoteagent.env.WAKILI_GATEWAY='${gatewayUrl}'`),
-    "-c", wrap(`mcp_servers.remoteagent.env.WAKILI_TOKEN='${config.token}'`),
+    "-c", wrap("mcp_servers.wakili.command='node'"),
+    "-c", wrap(`mcp_servers.wakili.args=['${MCP_SERVER}']`),
+    "-c", wrap(`mcp_servers.wakili.env.WAKILI_SESSION='${sessionId}'`),
+    "-c", wrap(`mcp_servers.wakili.env.WAKILI_GATEWAY='${gatewayUrl}'`),
+    "-c", wrap(`mcp_servers.wakili.env.WAKILI_TOKEN='${config.token}'`),
     // Pre-approve our tools: under approval_policy=never (how every headless
     // turn runs) codex auto-DENIES tool calls that would need an approval
     // prompt ("user cancelled MCP tool call") — these two are phone-facing and
     // safe, same reasoning as the Claude settings pre-allowing send_to_user.
-    "-c", wrap("mcp_servers.remoteagent.default_tools_approval_mode='approve'"),
+    "-c", wrap("mcp_servers.wakili.default_tools_approval_mode='approve'"),
   ];
 }
 
@@ -175,17 +175,20 @@ export const codexAgent = {
     args.push(...mcpOverrides({ sessionId, gatewayUrl })); // phone tools (send_to_user / ask_options), this run only
     args.push("-"); // read the prompt from stdin
 
-    // Codex has no --append-system-prompt, so the phone directives (use
-    // ask_options for questions, send_to_user for files) ride in front of the
-    // prompt text via stdin — safe to be multi-line here (no shell involved).
-    const prompt = `[Gateway note: ${PHONE_DIRECTIVE}]\n\n${text}`;
+    // Codex (0.139+) defers MCP tools behind its tool-search layer: the model
+    // does NOT see them (or their descriptions) upfront, so unlike the Claude
+    // adapters the directives can't ride on mcp-tools.mjs alone. Instead the
+    // gateway note goes in ONCE per thread — the first message stays in the
+    // thread's history, so resumed turns keep the instruction without it being
+    // re-sent on every prompt.
+    const prompt = resumeId ? text : `[Gateway note: ${PHONE_DIRECTIVE} These tools come from the "wakili" MCP server; if they are not in your active toolset, discover them with your tool search.]\n\n${text}`;
 
     const child = spawn("codex", args, {
       shell: config.isWin,
       cwd: cwd || undefined,
       // NOTE: codex does NOT forward these to the MCP servers it spawns (it
       // launches them with a whitelisted env) — the MCP server gets its context
-      // via the mcp_servers.remoteagent.env overrides above. Kept on the child
+      // via the mcp_servers.wakili.env overrides above. Kept on the child
       // itself for anything codex runs directly (shell commands, hooks).
       env: {
         ...process.env,
