@@ -1,9 +1,25 @@
 {
   "name": "wakili",
   "version": "0.1.0",
-  "private": true,
   "description": "Phone gateway for Claude Code — chat with your local Claude Code sessions from your phone over LAN, Tailscale, or Cloudflare.",
   "type": "module",
+  "bin": {
+    "wakili": "./server.mjs",
+    "wakili-cloudflare": "./cf.mjs"
+  },
+  "files": [
+    "server.mjs",
+    "cf.mjs",
+    "cf-bridge.mjs",
+    "src/",
+    "public/",
+    ".env.example"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ahmeedgamil/wakili.git"
+  },
+  "homepage": "https://github.com/ahmeedgamil/wakili#readme",
   "engines": {
     "node": ">=20"
   },

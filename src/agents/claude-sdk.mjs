@@ -4,10 +4,11 @@
 // phone's agent picker can choose either "Claude" (CLI) or "Claude (SDK)".
 //
 // Why it's cleaner than the CLI wrapper:
-//   - Permissions run through the SDK's in-process `canUseTool` callback instead
-//     of a PreToolUse hook subprocess — but we still route the decision to the
-//     SAME gateway endpoint (/internal/permission), so all the existing mode /
-//     remembered-tool / phone-card logic is reused untouched.
+//   - Permissions run in-process (a PreToolUse hook callback for gated tools,
+//     `canUseTool` for the rest) instead of a hook subprocess — but we still
+//     route every decision to the SAME gateway endpoint (/internal/permission),
+//     so all the existing mode / remembered-tool / phone-card logic is reused
+//     untouched.
 //   - The SDK yields messages in the same shape the CLI streams (assistant /
 //     user / stream_event / result), so runTurn's event handling works as-is —
 //     we just forward each message to onEvent.
@@ -83,6 +84,30 @@ export const claudeSdkAgent = {
           // by /internal/permission via canUseTool, so we leave the SDK in "default".
           permissionMode: controls.permissionMode === "plan" ? "plan" : "default",
           disallowedTools: ["AskUserQuestion"], // force questions through the ask_options MCP tool
+          // Gated tools go through a hook, not canUseTool, for the same reason the
+          // CLI adapter uses one: the SDK loads the user's settings allowlists
+          // (settingSources defaults to all), and a tool those rules allow never
+          // reaches canUseTool — the gateway would neither show a card nor publish
+          // the compensating tool chip, leaving the action invisible in the chat
+          // until the session is reopened. A hook fires unconditionally.
+          hooks: {
+            PreToolUse: [{
+              matcher: "Bash|Write|Edit|MultiEdit|NotebookEdit",
+              // Seconds. Must outlive askPermission's 125s wait, or an unanswered
+              // card would be cut off before the gateway's own timeout decides.
+              timeout: 130,
+              hooks: [async (hookInput) => {
+                const { decision, reason } = await askPermission(gatewayUrl, sessionId, hookInput.tool_name, hookInput.tool_input);
+                return {
+                  hookSpecificOutput: {
+                    hookEventName: "PreToolUse",
+                    permissionDecision: decision,
+                    permissionDecisionReason: reason || (decision === "allow" ? "Approved on phone" : "Denied on phone (or timed out)"),
+                  },
+                };
+              }],
+            }],
+          },
           systemPrompt: { type: "preset", preset: "claude_code", append: PHONE_DIRECTIVE },
           // Reuse the existing stdio MCP server (send_to_user + ask_options); it
           // needs the per-turn session/gateway/token via env, like the CLI path.

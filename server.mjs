@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // Entry point: thin HTTP layer that wires the agent registry, the session
 // repository, and the SSE hub together. All real logic lives in src/.
 //
@@ -21,7 +22,7 @@ import { sessionStore } from "./src/sessions/store.mjs";
 import { subscribe, subscribeAll, publish } from "./src/sse.mjs";
 import { createPermission, waitPermission, resolvePermission } from "./src/permissions.mjs";
 import { lockScreen, screenOff, setKeepAwake, powerStatus, shutdownPower, shutdownComputer } from "./src/power.mjs";
-import { autostartStatus, setAutostart, reconcileAutostart } from "./src/autostart.mjs";
+import { autostartStatus, setAutostart, reconcileAutostart, enrollAutostartOnce, refreshAutostart } from "./src/autostart.mjs";
 
 const EDIT_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]); // auto-approved under acceptEdits
 const busy = new Set(); // session ids with an in-flight turn
@@ -256,6 +257,37 @@ async function runTurn(session, text, controls, attachments, agentId) {
   children.set(session.id, child); // keep a handle so a turn can be interrupted
 }
 
+// Render a session's display transcript as readable markdown for an agent
+// handoff (switching agents can't carry the native thread across — resume ids
+// are per-agent — so the new agent reads this file for context instead).
+// Text only: thinking is skipped, tool calls become one-line notes.
+function transcriptMd(s) {
+  const toolLine = (p) => {
+    const input = p.input && typeof p.input === "object" ? (p.input.command || p.input.file_path || JSON.stringify(p.input)) : String(p.input || "");
+    return `\`[${p.name}] ${String(input).replace(/\s+/g, " ").slice(0, 160)}\``;
+  };
+  const lines = [
+    `# Handoff: ${s.title}`,
+    "",
+    `- Working directory: ${s.cwd || GATEWAY_CWD}`,
+    `- Previous agent: ${s.agentId}`,
+    "",
+    "This is the transcript of the user's previous conversation with another agent.",
+    "Read it to pick up the context, then continue the work from where it left off.",
+    "",
+  ];
+  for (const msg of s.messages || []) {
+    lines.push(msg.role === "user" ? "## User" : "## Assistant", "");
+    if (msg.text) lines.push(msg.text, "");
+    for (const a of msg.attachments || []) lines.push(`*(attached: ${a.name})*`, "");
+    for (const p of msg.parts || []) {
+      if (p.type === "text" && p.text.trim()) lines.push(p.text, "");
+      else if (p.type === "tool") lines.push(toolLine(p), "");
+    }
+  }
+  return lines.join("\n");
+}
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, "http://x");
@@ -354,6 +386,18 @@ const server = http.createServer(async (req, res) => {
         const s = await sessionStore.get(id);
         if (!s) return notFound(res);
         if (typeof b.title === "string") s.title = b.title;
+        // "Allow always" lives on the gateway, not the client: a backgrounded
+        // phone can't click Allow, so the approval must happen here. Turning it
+        // on also answers any cards already waiting — they'd otherwise sit
+        // until timeout even though the user just said "always allow".
+        if (typeof b.autoAllow === "boolean") {
+          s.autoAllow = b.autoAllow;
+          if (b.autoAllow) {
+            for (const [cardId, ev] of pendingCards.get(id) || []) {
+              if (ev.subtype === "permission_request") resolvePermission(cardId, "allow");
+            }
+          }
+        }
         if (typeof b.cwd === "string") {
           const dir = b.cwd.trim();
           if (dir && !(await isDir(dir))) return json(res, 400, { error: "not a directory" });
@@ -381,6 +425,30 @@ const server = http.createServer(async (req, res) => {
       json(res, 202, { ok: true });
       runTurn(s, text, b.controls, b.attachments, b.agentId);
       return;
+    }
+
+    // Continue a conversation with a different agent. Native threads can't
+    // cross agents, so instead: export this session's transcript to a markdown
+    // file (saved like an upload — the existing chip/delete/download plumbing
+    // all applies) and create a fresh session for the new agent in the same
+    // folder. The phone attaches the file to the new chat's composer; the new
+    // agent Reads it itself on the first turn.
+    if ((mm = p.match(/^\/api\/sessions\/([\w-]+)\/handoff$/)) && m === "POST") {
+      const src = await sessionStore.get(mm[1]);
+      if (!src) return notFound(res);
+      const b = await readBody(req);
+      if (!getAgent(b.agentId)) return json(res, 400, { error: "unknown agent" });
+      await fsp.mkdir(config.uploadsDir, { recursive: true });
+      const slug = String(src.title || "chat").replace(/[^\w.\- ]/g, "_").trim().slice(0, 40) || "chat";
+      const name = `handoff-${slug}.md`;
+      const dest = path.join(config.uploadsDir, `${crypto.randomUUID()}-${name}`);
+      await fsp.writeFile(dest, transcriptMd(src));
+      const next = await sessionStore.create({ agentId: b.agentId, cwd: src.cwd || null });
+      // A real title (not "New chat") survives the first turn's auto-titling.
+      next.title = "↪ " + (src.title || "chat");
+      await sessionStore.save(next);
+      const token = recordFile({ sessionId: next.id, source: "user", filePath: dest, name });
+      return json(res, 200, { session: withMeta(next), file: { name, path: dest, url: `/api/files/${token}` } });
     }
 
     // Direct shell command ("!cmd" from the chat box): run it in the session's
@@ -510,7 +578,9 @@ const server = http.createServer(async (req, res) => {
       const s = await sessionStore.get(b.sessionId);
       const mode = s?.controls?.permissionMode || "default";
       const allowed = s?.allowedTools || [];
-      if (mode === "bypassPermissions" || (mode === "acceptEdits" && EDIT_TOOLS.has(b.tool)) || allowed.includes(b.tool)) {
+      // s.autoAllow = the session's "Allow always" switch. Checked here (not on
+      // the client) so approvals keep flowing while the app is backgrounded.
+      if (mode === "bypassPermissions" || (mode === "acceptEdits" && EDIT_TOOLS.has(b.tool)) || allowed.includes(b.tool) || s?.autoAllow) {
         // Auto-approved without a card. The UI suppresses gated tools' chips
         // (expecting a permission card), so publish a chip here — otherwise the
         // action would be invisible in auto-accept / bypass / remembered modes.
@@ -772,6 +842,12 @@ async function finishStoreRelocation() {
 
 server.listen(config.port, async () => {
   await finishStoreRelocation();
+  // Start-at-login defaults to ON: the first launch ever registers autostart and
+  // records it, so the Settings toggle stays the single authority afterwards.
+  await enrollAutostartOnce();
+  // ...and if it's on, re-register with this install's paths so the login
+  // launcher can't go stale when the repo moves or node is upgraded.
+  await refreshAutostart();
   // LAN = addresses a phone on the same network could actually reach. Virtual /
   // overlay adapters are excluded: Tailscale's CGNAT range (100.64.0.0/10)
   // would appear mislabeled as "Local network" (Tailscale already gets its own

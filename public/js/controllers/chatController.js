@@ -13,14 +13,15 @@ const GATED = new Set(["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "As
 // sessions open in the same posture (notes #5). Per-session changes still win.
 const PERM_KEY = "ra-perm-mode";
 
-// "Allow always" — PER SESSION. When on for a session, that session's incoming
-// permission cards are approved automatically (the Allow button is clicked for
-// you). Stored as a { sessionId: 1 } map so every session starts OFF and
-// enabling it in one chat never loosens another. Survives restarts.
-const AUTO_KEY = "ra-auto-allow-sessions";
-// The old global switch is retired — remove it so nobody stays silently
-// auto-allowing everything from a setting they flipped before this change.
-try { localStorage.removeItem("ra-auto-allow"); } catch { /* private mode */ }
+// "Allow always" — PER SESSION, stored on the GATEWAY (session.autoAllow), not
+// in this client: the server auto-approves at the permission hook, so it keeps
+// working while the phone/tab is backgrounded or closed. Both old client-side
+// switches are retired — remove them so nobody stays silently auto-allowing
+// from a setting the server can no longer see.
+try {
+  localStorage.removeItem("ra-auto-allow");
+  localStorage.removeItem("ra-auto-allow-sessions");
+} catch { /* private mode */ }
 // The last agent + controls actually used, applied as defaults for new chats so
 // they keep your model/effort/thinking/mode instead of snapping back to the
 // agent's built-in default (e.g. Sonnet).
@@ -40,10 +41,6 @@ export function createChatController({ api, store, emitter }) {
 
   const loadLastConfig = () => { try { return JSON.parse(localStorage.getItem(LAST_KEY) || "null"); } catch { return null; } };
   const saveLastConfig = () => { const s = store.get(); localStorage.setItem(LAST_KEY, JSON.stringify({ agentId: s.agentId, controls: s.controls })); };
-
-  // Per-session "Allow always" map (see AUTO_KEY above).
-  const loadAutoMap = () => { try { return JSON.parse(localStorage.getItem(AUTO_KEY) || "{}") || {}; } catch { return {}; } };
-  const isAutoAllow = (id) => !!loadAutoMap()[id];
 
   // Build an agent's control values from its declared defaults, then layer on the
   // last-used controls for that agent, then any explicit overrides.
@@ -112,7 +109,7 @@ export function createChatController({ api, store, emitter }) {
         emitter.emit("snapshot", { parts: ev.parts, busy: ev.busy });
         // Re-raise the cards still awaiting an answer (the dock dedupes by id).
         for (const c of ev.pending || []) {
-          if (c.subtype === "permission_request") emitter.emit("permission", { id: c.id, tool: c.tool, input: c.input, autoAllow: store.get().autoAllow });
+          if (c.subtype === "permission_request") emitter.emit("permission", { id: c.id, tool: c.tool, input: c.input });
           else if (c.subtype === "question_request") emitter.emit("question", { id: c.id, questions: c.input?.questions || [] });
         }
         break;
@@ -125,7 +122,7 @@ export function createChatController({ api, store, emitter }) {
       case "tool": if (!gated) emitter.emit("tool", ev.tool); break; // gateway-issued chip (auto-approved gated tool)
       case "toolResult": if (!gated) emitter.emit("toolResult", { id: ev.id, output: ev.output, isError: ev.isError }); break;
       case "question": if (!gated) emitter.emit("question", { id: ev.id, questions: ev.questions }); break;
-      case "permission": if (!gated) emitter.emit("permission", { id: ev.id, tool: ev.tool, input: ev.input, autoAllow: store.get().autoAllow }); break;
+      case "permission": if (!gated) emitter.emit("permission", { id: ev.id, tool: ev.tool, input: ev.input }); break;
       case "requestResolved": if (!gated) emitter.emit("requestResolved", { id: ev.id }); break;
       case "file":
         store.set((s) => ({ files: { ...s.files, received: [...s.files.received, ev.file] } }));
@@ -228,7 +225,7 @@ export function createChatController({ api, store, emitter }) {
       const agentId = s.agentId || st.agentId;
       const agent = st.agents.find((a) => a.id === agentId);
       const unreadIds = { ...st.unreadIds }; delete unreadIds[id];
-      return { activeId: id, activeSession: s, agentId, unreadIds, autoAllow: isAutoAllow(id), controls: normalizeControls(agent, { ...defaultsFor(agent), ...(s.controls || {}) }), files: { received: [], uploaded: [] } };
+      return { activeId: id, activeSession: s, agentId, unreadIds, autoAllow: !!s.autoAllow, controls: normalizeControls(agent, { ...defaultsFor(agent), ...(s.controls || {}) }), files: { received: [], uploaded: [] } };
     });
     saveLastConfig(); // the session you're on becomes the default for new chats
     emitter.emit("historyLoaded", s.messages);
@@ -274,15 +271,22 @@ export function createChatController({ api, store, emitter }) {
     emitter.emit("focusInput");
   }
 
+  async function renameSession(id, title) {
+    try { await api.renameSession(id, title); } catch { return emitter.emit("toast", "Couldn't rename — check the connection"); }
+    // Reflect the new title immediately (open chat header + list); the follow-up
+    // refreshSessions() stays authoritative.
+    store.set((s) => ({
+      activeSession: s.activeSession && s.activeSession.id === id ? { ...s.activeSession, title } : s.activeSession,
+      sessions: s.sessions.map((x) => (x.id === id ? { ...x, title } : x)),
+    }));
+    refreshSessions();
+  }
+
   async function deleteSession(id) {
     const wasActive = store.get().activeId === id;
     sessionCache.delete(id);
     outbox.delete(id);
     sendChain.delete(id);
-    // Drop the session's "Allow always" entry so a future session reusing the
-    // map never inherits it.
-    const auto = loadAutoMap();
-    if (auto[id]) { delete auto[id]; localStorage.setItem(AUTO_KEY, JSON.stringify(auto)); }
     store.set((s) => { const u = { ...s.unreadIds }; delete u[id]; return { unreadIds: u }; });
     await api.deleteSession(id);
     await refreshSessions();
@@ -440,28 +444,58 @@ export function createChatController({ api, store, emitter }) {
     saveLastConfig();
   }
 
-  // Toggle "Allow always" for the ACTIVE session only (persisted; read on the
-  // next permission). Other sessions keep their own setting (default: off).
+  // Toggle "Allow always" for the ACTIVE session only. Persisted on the GATEWAY,
+  // which auto-approves at the permission hook — so it keeps working while this
+  // client is backgrounded. Turning it on also answers any cards already open.
   function setAutoAllow(on) {
     const id = store.get().activeId;
     if (!id) return;
-    const map = loadAutoMap();
-    if (on) map[id] = 1; else delete map[id];
-    localStorage.setItem(AUTO_KEY, JSON.stringify(map));
     store.set({ autoAllow: !!on });
+    api.setAutoAllow(id, on).catch(() => {
+      // The gateway never heard the change — reflect reality, not the wish.
+      if (store.get().activeId === id) store.set({ autoAllow: !on });
+    });
   }
 
+  // Switching agent on a chat that already has messages can't carry the native
+  // thread across (resume ids are per-agent). Instead: the server exports the
+  // transcript to a handoff file and creates a NEW chat for the new agent (same
+  // folder); we open it and prefill the composer with the file attached — the
+  // new agent reads it for context on the first turn. Nothing sends until the
+  // user hits Send, and the old chat stays intact (reopening it resumes natively).
+  async function continueWithAgent(cur, agentId, model) {
+    const agent = store.get().agents.find((a) => a.id === agentId);
+    const label = agent ? agent.label : agentId;
+    emitter.emit("toast", `Switching to ${label} — moving this conversation to a new chat…`);
+    let r = null;
+    try { r = await api.handoff(cur.id, agentId); } catch { /* toast below */ }
+    if (!r || !r.session) return emitter.emit("toast", "Couldn't switch agent — check the connection");
+    await refreshSessions();
+    await openSession(r.session.id);
+    if (model) store.set((s) => ({ controls: { ...s.controls, model } }));
+    saveLastConfig();
+    emitter.emit("handoff", { file: r.file });
+    emitter.emit("toast", `Now chatting with ${label} — the transcript is attached, press Send to continue`);
+  }
+
+  // An empty chat just switches in place, as before.
   function setAgent(id) {
-    const agent = store.get().agents.find((a) => a.id === id);
+    const st = store.get();
+    const cur = st.activeSession;
+    if (cur && (cur.messages || []).length && id !== cur.agentId) return continueWithAgent(cur, id);
+    const agent = st.agents.find((a) => a.id === id);
     store.set({ agentId: id, controls: defaultsFor(agent) });
     saveLastConfig();
   }
 
-  // Pick a model from the tree: switching agent resets that agent's controls to
-  // defaults; within the same agent, just change the model.
+  // Pick a model from the tree: switching agent on a non-empty chat goes through
+  // the handoff flow (carrying the picked model); on an empty chat it resets that
+  // agent's controls to defaults; within the same agent, just change the model.
   function pickModel(agentId, model) {
     const st = store.get();
     if (agentId !== st.agentId) {
+      const cur = st.activeSession;
+      if (cur && (cur.messages || []).length && agentId !== cur.agentId) return continueWithAgent(cur, agentId, model);
       const agent = st.agents.find((a) => a.id === agentId);
       store.set({ agentId, controls: defaultsFor(agent, { model }) });
     } else {
@@ -541,5 +575,5 @@ export function createChatController({ api, store, emitter }) {
     }, 6000);
   }
 
-  return { init, openSession, newSession, deleteSession, send, execTerm, stopActive, cancelQueued, setControl, setAutoAllow, setAgent, pickModel, answerPermission, answerQuestion, browseFolders, createFolder, setCwd, lockScreen, screenOff, shutdownComputer, setKeepAwake, setAutostart, removeUpload, getOutbox, retryOutbox, discardOutbox };
+  return { init, openSession, newSession, renameSession, deleteSession, send, execTerm, stopActive, cancelQueued, setControl, setAutoAllow, setAgent, pickModel, answerPermission, answerQuestion, browseFolders, createFolder, setCwd, lockScreen, screenOff, shutdownComputer, setKeepAwake, setAutostart, removeUpload, getOutbox, retryOutbox, discardOutbox };
 }

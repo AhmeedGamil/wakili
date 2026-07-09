@@ -40,9 +40,13 @@ function newChatWithPicker() {
 }
 const sidebar = createSidebar({
   onNew: newChatWithPicker,
+  // Header +: new chat in the last selected project (the open chat's folder),
+  // skipping the picker. With nothing open it lands in the default project.
+  onNewLast: () => { document.body.classList.remove("nav-open"); controller.newSession(store.get().activeSession?.effectiveCwd || null); },
   onNewInFolder: (cwd) => { document.body.classList.remove("nav-open"); controller.newSession(cwd); },
   onSelect: (id) => { document.body.classList.remove("nav-open"); controller.openSession(id); },
   onDelete: (id) => controller.deleteSession(id),
+  onRename: (id, title) => controller.renameSession(id, title),
   onOpenFiles: () => filesPage.open(),
   onAppearance: () => appearanceMenu.open(),
 });
@@ -305,6 +309,16 @@ emitter.on("requestResolved", (r) => dock.remove(r.id)); // answered elsewhere /
 emitter.on("file", (f) => messageList.addFile(f));
 emitter.on("turnEnd", () => messageList.endTurn());
 emitter.on("focusInput", () => composer.focus());
+// Agent handoff: a new chat was opened to continue with a different agent.
+// Attach the exported transcript (already on the laptop — status "done" skips
+// the upload) and suggest a first message; nothing sends until the user does.
+emitter.on("handoff", ({ file }) => {
+  composer.setState({
+    draft: "Read the attached transcript of my previous conversation, then continue from where it left off.",
+    pending: [{ name: file.name, isImg: false, status: "done", up: file }],
+  });
+  composer.focus();
+});
 
 // Transient notice (connection trouble etc.) — one reusable element, auto-hides.
 let toastEl = null, toastTimer = 0;

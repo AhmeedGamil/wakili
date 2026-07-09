@@ -316,7 +316,7 @@ export function createMessageList() {
     } else {
       card.appendChild(el("a", { class: "file-link", onClick: () => downloadFile(file.url, file.name) }, icon("download"), el("span", { class: "file-name", text: file.name })));
     }
-    if (file.caption) card.appendChild(el("div", { class: "file-cap", text: file.caption }));
+    if (file.caption) card.appendChild(el("div", { class: "file-cap", text: file.caption, title: file.caption }));
     return el("div", { class: "msg assistant" }, card);
   }
   function addFile(file) { segment(fileCard(file)); }

@@ -41,24 +41,45 @@ export const BASE_DIR = process.env.WAKILI_HOME
   } catch { /* copy failed — keep using whatever the paths below resolve to */ }
 })();
 
-// Minimal .env loader (no dependency): read ROOT/.env and populate process.env
-// for any keys not already set, so real shell env always wins. Runs before the
-// settings below are read. KEY=VALUE per line; # comments and blank lines skipped;
-// surrounding quotes stripped; an optional leading "export " is ignored.
+// Minimal .env loader (no dependency): populate process.env for any keys not
+// already set, so real shell env always wins. Runs before the settings below
+// are read. KEY=VALUE per line; # comments and blank lines skipped; surrounding
+// quotes stripped; an optional leading "export " is ignored.
+// TWO files are read, install root first, then the home store — so precedence
+// is: shell env > <root>/.env > ~/.wakili/.env. The home-store file is the
+// right place for a global npm install: a .env next to server.mjs would live
+// inside node_modules and be wiped by every update.
 (function loadDotEnv() {
-  let txt;
-  try { txt = fs.readFileSync(path.join(ROOT, ".env"), "utf8"); } catch { return; }
-  for (const raw of txt.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
-    const eq = line.indexOf("=");
-    if (eq === -1) continue;
-    const key = line.slice(0, eq).trim().replace(/^export\s+/, "");
-    if (!key || key in process.env) continue;
-    let val = line.slice(eq + 1).trim();
-    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) val = val.slice(1, -1);
-    process.env[key] = val;
+  for (const file of [path.join(ROOT, ".env"), path.join(BASE_DIR, ".env")]) {
+    let txt;
+    try { txt = fs.readFileSync(file, "utf8"); } catch { continue; }
+    for (const raw of txt.split(/\r?\n/)) {
+      const line = raw.trim();
+      if (!line || line.startsWith("#")) continue;
+      const eq = line.indexOf("=");
+      if (eq === -1) continue;
+      const key = line.slice(0, eq).trim().replace(/^export\s+/, "");
+      if (!key || key in process.env) continue;
+      let val = line.slice(eq + 1).trim();
+      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) val = val.slice(1, -1);
+      process.env[key] = val;
+    }
   }
+})();
+
+// When a proxy is configured (HTTPS_PROXY/HTTP_PROXY — e.g. api.anthropic.com
+// is blocked on the direct route), loopback must never go through it: the
+// permission hook is a child process that calls back into the gateway at
+// 127.0.0.1, and a proxied loopback breaks every approval card. Merge the
+// loopback names into whatever NO_PROXY the user set (never replace it), and
+// write both spellings — different tools read different cases.
+(function guardNoProxy() {
+  const proxied = process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy;
+  if (!proxied) return;
+  const items = (process.env.NO_PROXY || process.env.no_proxy || "")
+    .split(",").map((s) => s.trim()).filter(Boolean);
+  for (const host of ["localhost", "127.0.0.1", "::1"]) if (!items.includes(host)) items.push(host);
+  process.env.NO_PROXY = process.env.no_proxy = items.join(",");
 })();
 
 // ───────────────────────────────────────────────────────────────────────────

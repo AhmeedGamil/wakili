@@ -171,6 +171,44 @@ export async function setAutostart(on) {
   return autostartStatus();
 }
 
+// --- First-run enrollment -------------------------------------------------------
+// Start-at-login is ON by default: the very first launch registers autostart and
+// drops a marker file recording that the automatic enable already happened. From
+// then on the user's choice (the app's Settings toggle) is final — the server
+// never re-enables it behind their back. Skipped for ephemeral installs (the npx
+// cache): registering a path into a temp folder would break at the next login.
+const ENROLL_MARKER = path.join(config.runtimeDir, "autostart-enrolled");
+
+export async function enrollAutostartOnce() {
+  try {
+    if (fs.existsSync(ENROLL_MARKER)) return;
+    if (/[\\/]_npx[\\/]/.test(ROOT)) return;
+    const cur = await autostartStatus();
+    if (!cur.supported) return;
+    if (!cur.on) {
+      const r = await setAutostart(true);
+      if (r.error) return; // couldn't register — no marker written, so we retry next launch
+      console.log("  Start at login: enabled by default — turn it off anytime in the app's Settings.");
+    }
+    fs.writeFileSync(ENROLL_MARKER,
+      "Records that Wakili's one-time default enabling of start-at-login already ran.\n" +
+      "While this file exists the server never touches the setting again - the app's toggle rules.\n");
+  } catch { /* enrollment must never block startup */ }
+}
+
+// Self-heal: when start-at-login is enabled, re-register it pointing at THIS
+// install every startup. Registration embeds absolute node/server paths, so a
+// moved repo, a renamed folder, or a node upgrade leaves a launcher pointing at
+// nothing — on Windows that's a WScript error box at every login and no gateway.
+// Rewriting is idempotent and only ever flips paths to the copy actually running.
+export async function refreshAutostart() {
+  try {
+    if (/[\\/]_npx[\\/]/.test(ROOT)) return; // ephemeral install — never register its paths
+    const cur = await autostartStatus();
+    if (cur.supported && cur.on) await setAutostart(true);
+  } catch { /* best effort — never block startup */ }
+}
+
 // --- Legacy identity migration ------------------------------------------------
 // Before the rename to Wakili, autostart registered under "Remote Agent": the
 // Windows Run value "RemoteAgent" (its .vbs launcher lived inside <repo>/data),

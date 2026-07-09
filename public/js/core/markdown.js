@@ -52,6 +52,31 @@ export function renderMarkdown(src) {
       continue;
     }
 
+    // GFM table: a header row with pipes followed by a |---|:---:| delimiter
+    // row, then body rows until a line with no pipe. Wrapped in a scroll
+    // container so wide tables pan horizontally instead of breaking the layout.
+    if (line.includes("|") && i + 1 < lines.length && isTableDelimiter(lines[i + 1])) {
+      flushPara();
+      const header = splitRow(line);
+      const aligns = splitRow(lines[i + 1]).map((c) => {
+        const l = c.startsWith(":"), r = c.endsWith(":");
+        return l && r ? "center" : r ? "right" : "";
+      });
+      i += 2;
+      const rows = [];
+      while (i < lines.length && lines[i].includes("|") && !/^\s*$/.test(lines[i])) {
+        rows.push(splitRow(lines[i]));
+        i++;
+      }
+      const tr = (tag, cells) => "<tr>" + header.map((_, c) => {
+        const a = aligns[c] ? ' style="text-align:' + aligns[c] + '"' : "";
+        return "<" + tag + a + ">" + inline(cells[c] || "") + "</" + tag + ">";
+      }).join("") + "</tr>";
+      out.push('<div class="table-wrap"><table><thead>' + tr("th", header) + "</thead><tbody>"
+        + rows.map((r) => tr("td", r)).join("") + "</tbody></table></div>");
+      continue;
+    }
+
     // list (unordered - * +, or ordered 1. / 1) ) -- a run of same-kind items
     if (/^\s*([-*+]\s+|\d+[.)]\s+)/.test(line)) {
       flushPara();
@@ -75,6 +100,29 @@ export function renderMarkdown(src) {
   // Join with no separator: block tags concatenate directly, so no stray "\n"
   // shows through the message container's white-space: pre-wrap.
   return out.join("");
+}
+
+// The row under a table header: only pipes, dashes, colons and spaces, with at
+// least one dash and one pipe (so a plain "---" rule is never mistaken for one).
+function isTableDelimiter(line) {
+  return line.includes("|") && /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/.test(line);
+}
+
+// Split a table row into trimmed cells: outer pipes are decoration, and \| is
+// a literal pipe inside a cell.
+function splitRow(line) {
+  let s = line.trim();
+  if (s.startsWith("|")) s = s.slice(1);
+  if (s.endsWith("|") && !s.endsWith("\\|")) s = s.slice(0, -1);
+  const cells = [];
+  let cur = "";
+  for (let j = 0; j < s.length; j++) {
+    if (s[j] === "\\" && s[j + 1] === "|") { cur += "|"; j++; }
+    else if (s[j] === "|") { cells.push(cur.trim()); cur = ""; }
+    else cur += s[j];
+  }
+  cells.push(cur.trim());
+  return cells;
 }
 
 function escapeHtml(s) {

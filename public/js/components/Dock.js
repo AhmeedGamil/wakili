@@ -40,9 +40,10 @@ export function createDock({ onPermission, onAnswerQuestion, onArchive, onActive
   }
 
   // ---- permissions ----
+  // "Allow always" never reaches here — the gateway approves those at the
+  // permission hook (no card is published), so it works with the app asleep.
   function addPermission(req) {
     if (perms.some((r) => r.id === req.id)) return; // stream replay of a card already up
-    if (req.autoAllow) { decide(req, "allow_auto"); return; } // "Allow always" → resolve at once, no card
     perms.push(req);
     renderPerms();
   }
@@ -51,9 +52,7 @@ export function createDock({ onPermission, onAnswerQuestion, onArchive, onActive
   function decide(req, decision) {
     const i = perms.indexOf(req);
     if (i !== -1) perms.splice(i, 1);
-    // "allow_auto" is a display-only variant (the global "Allow always" switch
-    // answered, not the user) — the gateway only understands allow/deny.
-    onPermission(req.id, decision === "allow_auto" ? "allow" : decision, req.tool);
+    onPermission(req.id, decision, req.tool);
     archive(permRecord(req, decision));
     renderPerms();
   }
@@ -67,7 +66,6 @@ export function createDock({ onPermission, onAnswerQuestion, onArchive, onActive
   function permRecord(req, decision) {
     const ok = decision !== "deny";
     const note = decision === "allow_session" ? " — allowed (session)"
-      : decision === "allow_auto" ? " — allowed (always)"
       : ok ? " — allowed" : " — denied";
     const rec = el("div", { class: "msg perm decided " + (ok ? "allowed" : "denied") },
       el("div", { class: "perm-head" }, icon(ok ? "check" : "x"), el("span", { text: req.tool + note })));
@@ -131,17 +129,19 @@ export function createDock({ onPermission, onAnswerQuestion, onArchive, onActive
     const tabs = [];    // tab button per question
     let activeIdx = 0;
 
-    // Multi-question cards: the button is ALWAYS clickable — "Next" steps to the
-    // next unanswered question until everything is answered, then it becomes
-    // "Send answers". Single-question cards keep the plain submit button.
+    // Answers are never sent by a tap alone. The button reads "Next" while an
+    // unanswered question remains beyond the active one (needed for multiSelect,
+    // which can't auto-advance); on the last unanswered question — or a single
+    // question — it becomes "Send answers", enabled once everything is answered.
     const sendBtn = el("button", { class: "btn allow ask-send", type: "button", onClick: () => advance() }, "Send answers");
 
     function refresh() {
       tabs.forEach((t, i) => { t.classList.toggle("on", i === activeIdx); t.classList.toggle("done", !!answered(i)); });
       const all = state.every((_, i) => answered(i));
       if (multi) {
-        sendBtn.disabled = false;
-        sendBtn.textContent = all ? "Send answers" : "Next";
+        const rest = state.some((_, i) => i !== activeIdx && !answered(i)); // unanswered beyond the active tab
+        sendBtn.textContent = rest ? "Next" : "Send answers";
+        sendBtn.disabled = !rest && !all; // "Send answers" waits for the active question too
       } else {
         sendBtn.disabled = !all;
       }
@@ -184,7 +184,9 @@ export function createDock({ onPermission, onAnswerQuestion, onArchive, onActive
             st.picks.clear(); st.picks.add(o.label);
           }
           refresh();
-          if (!multi && !q.multiSelect) submit(); // lone single-select → submit at once
+          // A pick never sends by itself. A mid-list single-select answer steps
+          // to the next unanswered question; the last one waits for "Send answers".
+          if (multi && !q.multiSelect && !state.every((_, k) => answered(k))) advance();
         });
         optBtns.push(btn);
         opts.appendChild(btn);

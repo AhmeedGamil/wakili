@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // One-command Cloudflare: launches the gateway and the CF bridge together, so
 // you don't have to juggle two terminals. The gateway runs in its normal (auto)
 // mode — LAN + Tailscale still work — and the bridge adds the public, unbuffered
@@ -9,8 +10,13 @@
 // linger (a hard kill skips the children's own cleanup).
 
 import { spawn } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const node = process.execPath;
+// Resolve siblings next to THIS file, not the caller's cwd — a globally
+// installed `wakili-cloudflare` runs from any directory.
+const here = path.dirname(fileURLToPath(import.meta.url));
 const procs = [];
 let shuttingDown = false;
 
@@ -40,5 +46,5 @@ process.on("SIGINT", () => shutdown(0));
 process.on("SIGTERM", () => shutdown(0));
 
 console.log("Starting gateway + Cloudflare bridge…  (Ctrl+C to stop both)\n");
-launch(["server.mjs"]);
-setTimeout(() => launch(["cf-bridge.mjs"]), 1200); // let the gateway bind first
+launch([path.join(here, "server.mjs")]);
+setTimeout(() => launch([path.join(here, "cf-bridge.mjs")]), 1200); // let the gateway bind first

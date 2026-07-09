@@ -59,10 +59,16 @@ export const api = {
   getSession: (id) => call("GET", `/api/sessions/${id}`),
   renameSession: (id, title) => call("PATCH", `/api/sessions/${id}`, { title }),
   setCwd: (id, cwd) => call("PATCH", `/api/sessions/${id}`, { cwd }),
+  // "Allow always" is stored on the gateway (the server auto-approves), so it
+  // works even when no client is awake to answer the card.
+  setAutoAllow: (id, on) => call("PATCH", `/api/sessions/${id}`, { autoAllow: !!on }),
   folders: (path) => call("GET", `/api/folders?path=${encodeURIComponent(path || "")}`),
   createFolder: (parent, name) => call("POST", "/api/folders", { parent, name }),
   files: () => call("GET", "/api/files"),
   deleteSession: (id) => call("DELETE", `/api/sessions/${id}`),
+  // Continue with a different agent: exports the transcript to a handoff file
+  // and returns the fresh session for the new agent plus the file to attach.
+  handoff: (id, agentId) => call("POST", `/api/sessions/${id}/handoff`, { agentId }),
   send: (id, text, controls, attachments, agentId) =>
     call("POST", `/api/sessions/${id}/messages`, { text, controls, attachments, agentId }),
   // Shell commands can legitimately run up to the server's 60s cap — give them room.

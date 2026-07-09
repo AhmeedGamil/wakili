@@ -61,7 +61,7 @@ body {
 .picker-pop::-webkit-scrollbar, .dd-menu::-webkit-scrollbar, .sess-pop::-webkit-scrollbar, .add-menu::-webkit-scrollbar, .slash-menu::-webkit-scrollbar { display: none; }
 
 /* ---- sidebar ---- */
-#sidebar { display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--border); min-height: 0; }
+#sidebar { display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--border); min-height: 0; position: relative; }
 .side-brand { display: flex; align-items: center; gap: 10px; padding: 14px 15px 12px; }
 /* the logo is painted with the live accent: logo-mask.png (the glyph on real
    transparency — icon-192 is flattened on white, which masks to a full square)
@@ -136,12 +136,13 @@ body {
 .sf-file:hover { background: var(--hover); }
 .sf-empty { font-size: 12px; color: var(--muted); padding: 4px 8px 8px; }
 .session-list { flex: 1; overflow-y: auto; padding: 4px 8px; min-height: 0; }
-.group-head { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--text); padding: 16px 11px 10px; }
+/* the whole header row starts a chat in that project; the + is just a hint */
+.group-head { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--text); padding: 16px 11px 10px; cursor: pointer; border-radius: 10px; }
+.group-head:hover { background: var(--hover); }
 .group-head:first-child { padding-top: 8px; }
 .group-head .group-ico { flex: none; color: var(--text); }
 .group-label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.group-add { flex: none; background: none; border: 0; cursor: pointer; color: var(--text); font-size: 18px; line-height: 1; padding: 3px 6px; border-radius: 8px; }
-.group-add:hover { background: var(--hover); }
+.group-add { flex: none; display: inline-flex; color: var(--text); font-size: 18px; line-height: 1; padding: 3px 6px; }
 
 /* session row: optional folder badge under the title (flat "All chats" view) */
 .s-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
@@ -169,6 +170,24 @@ body {
 .sess-sep { border-top: 1px solid var(--border); margin: 4px 6px; }
 .sess-check { visibility: hidden; color: var(--accent); }
 .sess-pop button.on .sess-check { visibility: visible; }
+
+/* long-press / right-click menu on a session row (fixed: JS sets left/top) */
+.sess-ctx { position: fixed; top: 0; left: 0; right: auto; z-index: 80; min-width: 150px; }
+/* Delete stays red — icon and label (icons inherit currentColor) — on hover too */
+.sess-ctx button.ctx-danger, .sess-ctx button.ctx-danger:hover { color: #e5484d; }
+.sess-ctx button.ctx-danger:hover { background: rgba(229, 72, 77, .12); }
+.sess-ctx-input { margin: 6px 6px 0; padding: 8px 10px; font: inherit; font-size: 13px; color: var(--text); background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; outline: none; min-width: 190px; }
+.sess-ctx-input:focus { border-color: var(--accent); }
+.sess-ctx-row { display: flex; gap: 6px; justify-content: flex-end; padding: 6px; }
+.sess-ctx-row .btn { padding: 6px 12px; font-size: 13px; }
+
+/* centered delete-confirmation dialog */
+.confirm-overlay { position: fixed; inset: 0; z-index: 120; background: rgba(0, 0, 0, .45); display: flex; align-items: center; justify-content: center; padding: 24px; }
+.confirm-panel { width: min(360px, 92vw); background: var(--panel); border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 24px 64px rgba(0, 0, 0, .5); padding: 20px 18px 16px; }
+.confirm-title { font-size: 17px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
+.confirm-msg { font-size: 14px; color: var(--muted); line-height: 1.45; overflow-wrap: break-word; }
+.confirm-row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+.confirm-row .btn { padding: 9px 18px; font-size: 14px; }
 
 /* settings rows that act like the Device rows (e.g. "Show the guide again") */
 .set-row { display: flex; align-items: center; gap: 11px; width: 100%; padding: 11px 10px; background: none; border: 0; border-radius: 10px; color: var(--text); font: inherit; font-size: 14px; cursor: pointer; text-align: left; }
@@ -204,7 +223,9 @@ body {
 
 /* read-only folder chip in the topbar */
 .topbar-folder { font-size: 12px; color: var(--muted); background: var(--panel); border: 1px solid var(--border); border-radius: 999px; padding: 4px 11px; max-width: 42vw; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.session { display: flex; align-items: center; gap: 8px; padding: 9px 11px; border-radius: 10px; cursor: pointer; transition: background .12s ease; color: color-mix(in srgb, var(--text) 55%, var(--muted)); }
+/* user-select/touch-callout off: a long-press opens our Rename/Delete menu,
+   not the browser's text selection */
+.session { display: flex; align-items: center; gap: 8px; padding: 9px 11px; border-radius: 10px; cursor: pointer; transition: background .12s ease; color: color-mix(in srgb, var(--text) 55%, var(--muted)); user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .session:hover { background: var(--hover); }
 .session.active { background: var(--panel-2); color: var(--text); }
 .s-model { flex: none; max-width: 42%; font-size: 11px; color: var(--muted); background: var(--pill); border-radius: 999px; padding: 1px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -383,6 +404,10 @@ body {
 .text pre code, .bubble pre code { background: none; border: 0; padding: 0; font-size: 12.5px; line-height: 1.5; white-space: pre; }
 .text blockquote, .bubble blockquote { margin: 0 0 10px; padding-left: 12px; border-left: 3px solid var(--border); color: var(--muted); }
 .text hr, .bubble hr { border: 0; border-top: 1px solid var(--border); margin: 12px 0; }
+.text .table-wrap, .bubble .table-wrap, .think-body .table-wrap { margin: 0 0 10px; max-width: 100%; overflow-x: auto; }
+.text table, .bubble table, .think-body table { border-collapse: collapse; font-size: .95em; }
+.text th, .text td, .bubble th, .bubble td, .think-body th, .think-body td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; vertical-align: top; white-space: normal; }
+.text th, .bubble th, .think-body th { background: var(--panel); font-weight: 600; }
 
 /* ---- tool / diff card (the code Claude modified; click the header to open) ---- */
 .tool-card { margin-top: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
@@ -488,7 +513,9 @@ body {
 .file-img { max-width: 100%; max-height: 340px; border-radius: 10px; display: block; }
 .file-link { display: flex; align-items: center; gap: 7px; max-width: 100%; margin-top: 8px; color: var(--accent); text-decoration: none; font-size: 14px; }
 .file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-.file-cap { color: var(--muted); font-size: 13px; margin-top: 6px; }
+/* width:0 + min-width:100% keeps the caption out of the card's width math, so
+   the image alone sizes the card; long captions ellipsize instead of widening it */
+.file-cap { color: var(--muted); font-size: 13px; margin-top: 6px; width: 0; min-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* Sent attachments (yours): each an independent right-aligned card, separate
    from the message bubble. Images show just the picture; files icon + name. */
 .msg.user .att-msg, .msg.user .att-msg-link { margin-left: auto; }
@@ -538,8 +565,11 @@ body {
 .add-item:hover { background: var(--hover); }
 .add-item svg { width: 18px; height: 18px; flex: none; color: var(--muted); }
 
-/* Terminal page (full-screen shell, opened from the + menu) */
-.term-panel { padding: 0; }
+/* Terminal page (full-screen shell, opened from the + menu). Unlike the other
+   ft-panel pages it takes the WHOLE screen: no modal margins, no rounding —
+   exit via the × in its header (or the app's back button). */
+.term-overlay { padding: 0; }
+.term-panel { padding: 0; width: 100%; max-width: 100%; height: 100dvh; max-height: 100dvh; border-radius: 0; border: 0; box-shadow: none; }
 .term-head-left { display: flex; align-items: center; gap: 8px; }
 .term-head-left svg { width: 18px; height: 18px; color: var(--accent); }
 /* terminal tabs: one per shell, + to open another, × asks before closing */

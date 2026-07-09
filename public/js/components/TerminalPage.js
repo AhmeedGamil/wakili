@@ -145,7 +145,15 @@ export function createTerminalPage({ onRun }) {
   }
 
   function open(startCwd) {
-    if (!terms.length) addTerm(startCwd);          // returning finds everything as it was
+    // Returning finds everything as it was — unless the caller comes from a
+    // different project than the visible tab. Then surface a terminal for THAT
+    // project: reuse a tab already sitting in its folder, else add a fresh one.
+    if (!terms.length) addTerm(startCwd);
+    else if (startCwd && terms[cur] && terms[cur].cwd !== startCwd) {
+      const i = terms.findIndex((t) => t.cwd === startCwd);
+      if (i >= 0) setCur(i);
+      else addTerm(startCwd);
+    }
     overlay.removeAttribute("hidden");
     setTimeout(() => input.focus(), 0);
   }
