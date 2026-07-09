@@ -18,9 +18,9 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ahmeedgamil/wakili.git"
+    "url": "git+https://github.com/AhmeedGamil/wakili.git"
   },
-  "homepage": "https://github.com/ahmeedgamil/wakili#readme",
+  "homepage": "https://github.com/AhmeedGamil/wakili#readme",
   "engines": {
     "node": ">=20"
   },
