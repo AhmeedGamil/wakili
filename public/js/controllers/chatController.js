@@ -62,8 +62,11 @@ export function createChatController({ api, store, emitter }) {
   function normalizeControls(agent, controls) {
     const out = { ...controls };
     for (const [k, ctl] of Object.entries(agent?.controls || {})) {
-      if (!Array.isArray(ctl.options)) continue;
-      if (ctl.options.some((o) => o.value === out[k])) continue; // already a valid option
+      // Model-scoped options (e.g. Codex effort): validate against the selected
+      // model's list. `model` is declared first, so out.model is already healed.
+      const options = (ctl.optionsFor && ctl.optionsFor[out.model]) || ctl.options;
+      if (!Array.isArray(options)) continue;
+      if (options.some((o) => o.value === out[k])) continue; // already a valid option
       // Legacy heal: map an old full model id ("claude-<family>-…") back to its
       // family alias so the prior choice is preserved; else fall back to default.
       const m = typeof out[k] === "string" && out[k].match(/^claude-([a-z]+)-/);

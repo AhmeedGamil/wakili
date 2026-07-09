@@ -38,6 +38,33 @@ function loadCodexModels() {
 
 const CODEX_MODELS = loadCodexModels() || FALLBACK_MODELS;
 
+// --- Reasoning effort ----------------------------------------------------------
+// The GPT-5.6 tiers grew Codex's effort ladder: every 5.6 model takes `max`,
+// and Sol + Terra additionally take `ultra` (multi-agent orchestration mode).
+// Older models stop at xhigh. The control's `optionsFor` map gives the UI the
+// exact list per model; plain `options` stays as the union fallback for clients
+// that don't know optionsFor — run() clamps an unsupported pick down to the
+// selected model's ceiling so a stale saved value can't fail the turn.
+const EFFORT_LADDER = ["low", "medium", "high", "xhigh", "max", "ultra"];
+const EFFORT_LABELS = { low: "Light", medium: "Medium", high: "High", xhigh: "Extra High", max: "Max", ultra: "Ultra" };
+
+function effortCeiling(model) {
+  if (/^gpt-5\.6-(sol|terra)/.test(model || "")) return "ultra";
+  if (/^gpt-5\.6/.test(model || "")) return "max";
+  return "xhigh";
+}
+
+function effortOptions(ceiling) {
+  const cut = EFFORT_LADDER.indexOf(ceiling) + 1;
+  return [{ value: "", label: "Default" }, ...EFFORT_LADDER.slice(0, cut).map((v) => ({ value: v, label: EFFORT_LABELS[v] }))];
+}
+
+function clampEffort(model, effort) {
+  const idx = EFFORT_LADDER.indexOf(effort);
+  if (idx === -1) return ""; // unset or unknown -> Codex default
+  return EFFORT_LADDER[Math.min(idx, EFFORT_LADDER.indexOf(effortCeiling(model)))];
+}
+
 // --- Slash commands ----------------------------------------------------------
 // Codex has no exec-usable command list to probe (its TUI slash commands like
 // /model, /review don't apply under `codex exec`). The real analog to Claude's
@@ -117,8 +144,8 @@ const APPROVAL = {
 // Codex adapter. Codex's `exec --json` emits whole items (no token deltas), so
 // we translate its events into the same Claude-shaped events the gateway and UI
 // already understand — one text_delta carrying the full reply (the client's
-// typewriter still reveals it smoothly). Declares its own native control:
-// `reasoning` (Codex's name), not Claude's `effort`/`thinking`.
+// typewriter still reveals it smoothly). Declares an `effort` control mapped to
+// Codex's model_reasoning_effort, with a per-model ladder (see effortCeiling).
 //
 // Codex gets the gateway's MCP tools (send_to_user for file delivery,
 // ask_options for tappable questions) via per-spawn overrides — see
@@ -140,16 +167,11 @@ export const codexAgent = {
       default: CODEX_MODELS[0].value,
       options: CODEX_MODELS,
     },
-    reasoning: {
-      label: "Reasoning",
+    effort: {
+      label: "Effort",
       default: "",
-      options: [
-        { value: "", label: "Default" },
-        { value: "low", label: "Light" },
-        { value: "medium", label: "Medium" },
-        { value: "high", label: "High" },
-        { value: "xhigh", label: "Extra High" },
-      ],
+      options: effortOptions("ultra"), // union fallback; run() clamps per model
+      optionsFor: Object.fromEntries(CODEX_MODELS.map((m) => [m.value, effortOptions(effortCeiling(m.value))])),
     },
     // Codex's approval/sandbox posture (Codex's own three modes). Applied on a
     // fresh session; a resumed session inherits the sandbox it was created with.
@@ -171,7 +193,10 @@ export const codexAgent = {
     // resume inherits the session's sandbox; a fresh session takes the chosen mode
     if (!resumeId) args.push(...(APPROVAL[controls.approval] || APPROVAL["workspace-write"]));
     if (controls.model) args.push("-m", controls.model);
-    if (controls.reasoning) args.push("-c", `model_reasoning_effort=${controls.reasoning}`);
+    // `controls.reasoning` is the control's pre-rename key — sessions saved
+    // before the rename still carry it.
+    const effort = clampEffort(controls.model, controls.effort || controls.reasoning || "");
+    if (effort) args.push("-c", `model_reasoning_effort=${effort}`);
     args.push(...mcpOverrides({ sessionId, gatewayUrl })); // phone tools (send_to_user / ask_options), this run only
     args.push("-"); // read the prompt from stdin
 
@@ -198,6 +223,17 @@ export const codexAgent = {
       },
     });
 
+    // A failed turn emits BOTH {type:"error"} and {type:"turn.failed"} with the
+    // same message (e.g. "model requires a newer version of Codex") — without
+    // surfacing it the phone just shows a blank reply. Report it once.
+    let lastError = null;
+    const reportError = (raw) => {
+      const msg = errorText(raw);
+      if (!msg || msg === lastError) return;
+      lastError = msg;
+      onError && onError(msg);
+    };
+
     let buf = "";
     child.stdout.on("data", (chunk) => {
       buf += chunk.toString();
@@ -208,7 +244,7 @@ export const codexAgent = {
         if (!line) continue;
         let evt;
         try { evt = JSON.parse(line); } catch { continue; }
-        translate(evt, onEvent);
+        translate(evt, onEvent, reportError);
       }
     });
     child.stderr.on("data", (d) => onError && onError(d.toString()));
@@ -230,14 +266,29 @@ export const codexAgent = {
   },
 };
 
+// Codex error payloads wrap the API's JSON error as a string, e.g.
+// '{"type":"error","status":400,"error":{"message":"The model requires…"}}' —
+// dig out the human-readable message when present, otherwise pass through.
+function errorText(raw) {
+  const s = String(raw ?? "").trim();
+  try {
+    const j = JSON.parse(s);
+    return String(j?.error?.message || j?.message || s);
+  } catch { return s; }
+}
+
 // Codex event -> Claude-shaped gateway event.
 let toolSeq = 0; // fallback tool_use id when a codex item carries none
-function translate(evt, onEvent) {
+function translate(evt, onEvent, onError) {
   if (evt.type === "thread.started" && evt.thread_id) {
     // carry the resume id the same way Claude's `result.session_id` does
     onEvent({ type: "result", session_id: evt.thread_id });
     return;
   }
+  // Fatal errors ({type:"error"}) and failed turns ({type:"turn.failed"}) both
+  // carry the reason the turn produced no reply — surface it to the phone.
+  if (evt.type === "error") { onError(evt.message); return; }
+  if (evt.type === "turn.failed") { onError(evt.error && evt.error.message); return; }
   if (evt.type === "item.completed" && evt.item) {
     const item = evt.item;
     if (item.type === "agent_message" && typeof item.text === "string") {

@@ -34,7 +34,10 @@ export function createModelPicker({ onPickAgent, onPickModel, onControlChange, o
     mk({ label: "Model", options: modelOpts, value: controls.model, onChange: (v) => onPickModel(agentId, v) });
     for (const [key, c] of Object.entries(agent?.controls || {})) {
       if (key === "model") continue;
-      mk({ label: c.label, options: c.options, value: controls[key] != null ? controls[key] : c.default, onChange: (v) => onControlChange(key, v) });
+      // A control can scope its options to the selected model (e.g. Codex's
+      // effort ladder: ultra only on models that take it).
+      const options = (c.optionsFor && c.optionsFor[controls.model]) || c.options;
+      mk({ label: c.label, options, value: controls[key] != null ? controls[key] : c.default, onChange: (v) => onControlChange(key, v) });
     }
 
     // "Allow always" — a plain on/off switch (not an agent control; it governs the
