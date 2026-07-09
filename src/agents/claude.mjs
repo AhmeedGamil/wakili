@@ -237,6 +237,34 @@ export const SEND_DIRECTIVE =
 // systemPrompt `append` (no shell in the way, so multi-line is safe there).
 export const PHONE_DIRECTIVE = ASK_DIRECTIVE + "\n\n" + SEND_DIRECTIVE;
 
+// --- Warm sessions -------------------------------------------------------------
+// One CLI process per SESSION, not per turn. The process is spawned with
+// --input-format stream-json and kept alive between turns; each new message is
+// written to its stdin as a stream-json user event, skipping the CLI's ~1-2s
+// boot on every message. Because model/effort/mode/cwd are spawn-time flags,
+// the process is recycled when any of them change; it's also killed after
+// config.warmTtlMs idle — the next message just cold-starts with --resume, so
+// nothing is lost. Reuse additionally requires the caller's resumeId to be the
+// thread this process is already on (guards agent switches, which null it).
+const warm = new Map(); // sessionId -> { child, key, threadId, turn, idleTimer, alive }
+
+function killWarm(entry) {
+  clearTimeout(entry.idleTimer);
+  entry.alive = false;
+  // Same reasoning as the server's killTree: under shell:true a plain kill()
+  // only takes down the cmd.exe wrapper — kill the whole tree on Windows.
+  if (config.isWin && entry.child.pid) {
+    try { spawn("taskkill", ["/pid", String(entry.child.pid), "/t", "/f"], { stdio: "ignore" }); return; } catch { /* fall through */ }
+  }
+  try { entry.child.kill(); } catch { /* already gone */ }
+}
+
+// Called on gateway shutdown so warm processes don't outlive it.
+export function closeWarmClaude() {
+  for (const e of warm.values()) killWarm(e);
+  warm.clear();
+}
+
 export const claudeAgent = {
   id: "claude",
   label: "Claude",
@@ -296,8 +324,33 @@ export const claudeAgent = {
   },
 
   run({ text, controls = {}, resumeId, sessionId, cwd, gatewayUrl, onEvent, onError, onClose }) {
+    // Appending the thinking keyword to a slash command ("/context\n\nthink")
+    // stops the CLI from recognizing it — the whole thing would go to the model
+    // as plain text. Slash commands ship exactly as typed.
+    const isSlash = /^\//.test((text || "").trim());
+    const keyword = THINKING[controls.thinking] || "";
+    const prompt = keyword && !isSlash ? `${text}\n\n${keyword}` : text;
+    // The turn's message in stream-json input form (one JSON object per line).
+    const userMsg = JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text: prompt }] } }) + "\n";
+
+    // Reuse the session's warm process when its spawn-time settings still match
+    // and it's sitting on the thread the caller wants to continue.
+    const key = JSON.stringify([controls.model || "", controls.effort || "", controls.permissionMode || "default", cwd || ""]);
+    const existing = warm.get(sessionId);
+    if (existing) {
+      if (existing.alive && !existing.turn && existing.key === key && resumeId === existing.threadId) {
+        clearTimeout(existing.idleTimer);
+        existing.turn = { onEvent, onError, onClose };
+        try { existing.child.stdin.write(userMsg); return existing.child; }
+        catch { /* dead pipe — recycle below */ }
+      }
+      killWarm(existing);
+      warm.delete(sessionId);
+    }
+
     const args = [
       "-p",
+      "--input-format", "stream-json", // stdin stays open; one process serves the whole session
       "--output-format", "stream-json",
       "--verbose",
       "--include-partial-messages",
@@ -317,13 +370,6 @@ export const claudeAgent = {
     if (controls.effort) args.push("--effort", controls.effort);
     if (resumeId) args.push("--resume", resumeId);
 
-    // Appending the thinking keyword to a slash command ("/context\n\nthink")
-    // stops the CLI from recognizing it — the whole thing would go to the model
-    // as plain text. Slash commands ship exactly as typed.
-    const isSlash = /^\//.test((text || "").trim());
-    const keyword = THINKING[controls.thinking] || "";
-    const prompt = keyword && !isSlash ? `${text}\n\n${keyword}` : text;
-
     const child = spawn("claude", args, {
       shell: config.isWin,
       cwd: cwd || undefined,
@@ -339,6 +385,21 @@ export const claudeAgent = {
       },
     });
 
+    const entry = { child, key, threadId: resumeId || null, turn: { onEvent, onError, onClose }, idleTimer: null, alive: true };
+    warm.set(sessionId, entry);
+
+    // A turn ends on the CLI's `result` event (the process stays alive waiting
+    // for the next stdin message) or on process death, whichever comes first.
+    const endTurn = (code) => {
+      const t = entry.turn;
+      entry.turn = null;
+      if (entry.alive) {
+        entry.idleTimer = setTimeout(() => { killWarm(entry); if (warm.get(sessionId) === entry) warm.delete(sessionId); }, config.warmTtlMs);
+        entry.idleTimer.unref?.();
+      }
+      if (t && t.onClose) t.onClose(code);
+    };
+
     let buf = "";
     child.stdout.on("data", (chunk) => {
       buf += chunk.toString();
@@ -349,25 +410,31 @@ export const claudeAgent = {
         if (!line) continue;
         let evt;
         try { evt = JSON.parse(line); } catch { continue; }
-        onEvent(evt);
+        if (evt.type === "result" && evt.session_id) entry.threadId = evt.session_id; // the thread this process now carries
+        const t = entry.turn;
+        if (t) t.onEvent(evt);
+        if (evt.type === "result") endTurn(0);
       }
     });
-    child.stderr.on("data", (d) => onError && onError(d.toString()));
-    let closed = false;
-    const closeOnce = (code) => { if (!closed) { closed = true; onClose && onClose(code); } };
-    child.on("close", closeOnce);
+    child.stderr.on("data", (d) => { const t = entry.turn; if (t && t.onError) t.onError(d.toString()); });
+    child.on("close", (code) => {
+      entry.alive = false;
+      clearTimeout(entry.idleTimer);
+      if (warm.get(sessionId) === entry) warm.delete(sessionId);
+      if (entry.turn) endTurn(code); // died mid-turn (crash or user stop)
+    });
     // A failed spawn (bad cwd, missing binary) emits 'error', not 'close'. Without
     // this handler that error is unhandled and takes down the whole gateway.
     child.on("error", (e) => {
-      if (onError) onError(`failed to start claude: ${e.message}`);
-      closeOnce(-1);
+      entry.alive = false;
+      if (warm.get(sessionId) === entry) warm.delete(sessionId);
+      const t = entry.turn;
+      if (t && t.onError) t.onError(`failed to start claude: ${e.message}`);
+      if (entry.turn) endTurn(-1);
     });
 
     // stdin writes can also throw if the process never started.
-    try {
-      child.stdin.write(prompt);
-      child.stdin.end();
-    } catch { /* surfaced via the error handler above */ }
+    try { child.stdin.write(userMsg); } catch { /* surfaced via the error handler above */ }
     return child;
   },
 };

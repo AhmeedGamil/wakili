@@ -141,11 +141,194 @@ const APPROVAL = {
   "full-access": ["--dangerously-bypass-approvals-and-sandbox"],
 };
 
-// Codex adapter. Codex's `exec --json` emits whole items (no token deltas), so
-// we translate its events into the same Claude-shaped events the gateway and UI
-// already understand — one text_delta carrying the full reply (the client's
-// typewriter still reveals it smoothly). Declares an `effort` control mapped to
-// Codex's model_reasoning_effort, with a per-model ladder (see effortCeiling).
+// The same three choices as app-server sandbox policies (per-turn overrides).
+const SANDBOX_POLICY = {
+  "read-only": { type: "readOnly" },
+  "workspace-write": { type: "workspaceWrite" },
+  "full-access": { type: "dangerFullAccess" },
+};
+
+// --- Warm sessions (app-server) -------------------------------------------------
+// Instead of one `codex exec` process per TURN, a single long-lived
+// `codex app-server` process (the JSON-RPC engine behind the Codex desktop app)
+// hosts EVERY codex session as a thread. Each turn is a `turn/start` call; the
+// process persists between turns, so per-message spawn cost disappears — and
+// unlike exec, the protocol streams agent-message deltas (real typewriter) and
+// takes model/effort/sandbox as per-turn overrides. The server is killed after
+// config.warmTtlMs with no active turns; threads live on disk, so the next
+// message just resumes. If app-server can't start (older CLI, warm disabled),
+// run() falls back to the classic per-turn exec path below.
+let server = null; // singleton { child, rpc, threads, sessions, ... } or null
+
+function startServer() {
+  const child = spawn("codex", ["app-server"], { shell: config.isWin, env: process.env });
+  const srv = {
+    child,
+    alive: true,
+    nextId: 0,
+    pending: new Map(),  // rpc id -> { resolve, reject, timer }
+    threads: new Map(),  // threadId -> { turn, sawDelta, turnId }
+    sessions: new Map(), // wakili sessionId -> threadId (warm binding)
+    active: 0,           // in-flight turns; 0 arms the idle kill timer
+    idleTimer: null,
+    ready: null,
+  };
+  const write = (obj) => { try { child.stdin.write(JSON.stringify(obj) + "\n"); } catch { /* dying; rpc timeouts handle it */ } };
+  srv.rpc = (method, params, timeoutMs = 60000) => new Promise((resolve, reject) => {
+    const id = ++srv.nextId;
+    const timer = setTimeout(() => { srv.pending.delete(id); reject(new Error(`codex app-server: ${method} timed out`)); }, timeoutMs);
+    timer.unref?.();
+    srv.pending.set(id, { resolve, reject, timer });
+    write({ jsonrpc: "2.0", id, method, params });
+  });
+
+  let buf = "";
+  child.stdout.on("data", (chunk) => {
+    buf += chunk.toString();
+    let nl;
+    while ((nl = buf.indexOf("\n")) !== -1) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      let msg;
+      try { msg = JSON.parse(line); } catch { continue; }
+      if (msg.id != null && msg.method) {
+        // Server->client request (an approval prompt). approval_policy=never
+        // should prevent these; decline anything that slips through so no
+        // turn can hang waiting on a reply we'd never send.
+        write({ jsonrpc: "2.0", id: msg.id, result: { decision: "denied" } });
+      } else if (msg.id != null) {
+        const p = srv.pending.get(msg.id);
+        if (p) {
+          srv.pending.delete(msg.id);
+          clearTimeout(p.timer);
+          msg.error ? p.reject(new Error(msg.error.message || JSON.stringify(msg.error))) : p.resolve(msg.result);
+        }
+      } else if (msg.method) {
+        routeNotification(srv, msg.method, msg.params || {});
+      }
+    }
+  });
+  // stderr is the server's own logging (model-cache refreshes etc.), not turn
+  // errors — those arrive as `error` notifications. Don't spam the phone.
+  child.stderr.on("data", () => {});
+
+  const die = () => {
+    if (!srv.alive) return;
+    srv.alive = false;
+    clearTimeout(srv.idleTimer);
+    for (const p of srv.pending.values()) { clearTimeout(p.timer); p.reject(new Error("codex app-server exited")); }
+    srv.pending.clear();
+    for (const [threadId, st] of srv.threads) {
+      if (st.turn) { const t = st.turn; st.turn = null; if (t.onError) t.onError("codex app-server exited"); t.onEvent({ type: "result", session_id: threadId }); if (t.onClose) t.onClose(-1); }
+    }
+    srv.threads.clear();
+    srv.sessions.clear();
+    if (server === srv) server = null;
+  };
+  child.on("close", die);
+  child.on("error", die);
+
+  srv.ready = (async () => {
+    await srv.rpc("initialize", { clientInfo: { name: "wakili", title: "Wakili", version: "0.1.0" } }, 15000);
+    write({ jsonrpc: "2.0", method: "initialized", params: {} });
+    return srv;
+  })();
+  return srv;
+}
+
+function getServer() {
+  if (!server || !server.alive) server = startServer();
+  return server;
+}
+
+function killServer(srv) {
+  srv.alive = false; // stop reuse immediately; die() finishes the bookkeeping
+  if (config.isWin && srv.child.pid) {
+    try { spawn("taskkill", ["/pid", String(srv.child.pid), "/t", "/f"], { stdio: "ignore" }); return; } catch { /* fall through */ }
+  }
+  try { srv.child.kill(); } catch { /* already gone */ }
+}
+
+// Called on gateway shutdown so the app-server doesn't outlive it.
+export function closeWarmCodex() {
+  if (server && server.alive) killServer(server);
+  server = null;
+}
+
+const armIdle = (srv) => {
+  clearTimeout(srv.idleTimer);
+  srv.idleTimer = setTimeout(() => { if (srv.active === 0) killServer(srv); }, config.warmTtlMs);
+  srv.idleTimer.unref?.();
+};
+
+// "commandExecution" -> "command_execution": v2 item types are camelCase, but
+// both phone clients already render the exec path's snake_case names.
+const snakeCase = (s) => String(s).replace(/[A-Z]/g, (c) => "_" + c.toLowerCase());
+
+function endTurn(srv, threadId, code) {
+  const st = srv.threads.get(threadId);
+  if (!st || !st.turn) return;
+  const t = st.turn;
+  st.turn = null;
+  st.sawDelta.clear();
+  srv.active = Math.max(0, srv.active - 1);
+  if (srv.active === 0) armIdle(srv);
+  t.onEvent({ type: "result", session_id: threadId }); // the session's resume id
+  if (t.onClose) t.onClose(code);
+}
+
+// app-server notification -> Claude-shaped gateway events (same shapes the exec
+// path's translate() produces, so the web and Android clients need no changes).
+function routeNotification(srv, method, params) {
+  const st = params.threadId ? srv.threads.get(params.threadId) : null;
+  if (!st) return;
+  const turn = st.turn;
+  if (method === "turn/started") {
+    st.turnId = params.turn && params.turn.id;
+  } else if (method === "item/agentMessage/delta") {
+    st.sawDelta.add(params.itemId);
+    if (turn) turn.onEvent({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: params.delta } } });
+  } else if (method === "item/completed") {
+    const item = params.item;
+    if (!item || !turn) return;
+    if (item.type === "agentMessage") {
+      // Already streamed via deltas; only emit whole if no delta ever arrived.
+      if (!st.sawDelta.has(item.id) && typeof item.text === "string") {
+        turn.onEvent({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: item.text } } });
+      }
+    } else if (item.type === "commandExecution") {
+      const id = item.id || `codex-tool-${++toolSeq}`;
+      turn.onEvent({ type: "assistant", message: { content: [{ type: "tool_use", name: "command_execution", input: { command: item.command || "" }, id }] } });
+      const out = item.aggregatedOutput ?? "";
+      const isError = item.exitCode != null && item.exitCode !== 0;
+      if (out || isError) {
+        turn.onEvent({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, content: String(out), is_error: isError }] } });
+      }
+    } else if (item.type !== "reasoning" && item.type !== "userMessage") {
+      const name = item.type === "mcpToolCall" ? (item.tool || "mcp_tool_call") : snakeCase(item.type || "item");
+      turn.onEvent({ type: "assistant", message: { content: [{ type: "tool_use", name, input: item, id: item.id }] } });
+    }
+  } else if (method === "error") {
+    // willRetry errors are transient reconnect chatter; the terminal failure
+    // arrives with willRetry=false (and again on turn/completed's status).
+    if (!params.willRetry && turn && turn.onError) {
+      turn.onError(errorText(params.error && params.error.message ? params.error.message : params.error));
+    }
+  } else if (method === "turn/completed") {
+    const t = params.turn || {};
+    if (t.status === "failed" && t.error && t.error.message && turn && turn.onError) turn.onError(errorText(t.error.message));
+    endTurn(srv, params.threadId, t.status === "failed" ? 1 : 0);
+  }
+}
+
+// Codex adapter. Primary path: the warm app-server above (true streaming
+// deltas, per-turn model/effort/sandbox overrides). Fallback path: per-turn
+// `exec --json`, which emits whole items (no token deltas) that translate()
+// turns into one text_delta carrying the full reply. Both produce the same
+// Claude-shaped events the gateway and UI already understand. Declares an
+// `effort` control mapped to Codex's model_reasoning_effort, with a per-model
+// ladder (see effortCeiling).
 //
 // Codex gets the gateway's MCP tools (send_to_user for file delivery,
 // ask_options for tappable questions) via per-spawn overrides — see
@@ -186,7 +369,108 @@ export const codexAgent = {
     },
   },
 
-  run({ text, controls = {}, resumeId, sessionId, cwd, gatewayUrl, onEvent, onError, onClose }) {
+  run(opts) {
+    if (!config.warmTtlMs) return runExec(opts); // warm sessions disabled -> classic per-turn exec
+    const { text, controls = {}, resumeId, sessionId, cwd, gatewayUrl, onEvent, onError, onClose } = opts;
+
+    // Returned before the async work below settles. kill() interrupts the
+    // running turn (turn/interrupt) — never the shared server, which hosts
+    // other sessions' threads too. If we fell back to exec, kill its tree.
+    const handle = {
+      killed: false, _srv: null, _threadId: null, _fallback: null,
+      kill() {
+        this.killed = true;
+        if (this._fallback) {
+          if (config.isWin && this._fallback.pid) { try { spawn("taskkill", ["/pid", String(this._fallback.pid), "/t", "/f"], { stdio: "ignore" }); return; } catch { /* fall through */ } }
+          try { this._fallback.kill(); } catch { /* already gone */ }
+          return;
+        }
+        const srv = this._srv, threadId = this._threadId;
+        if (srv && srv.alive && threadId) {
+          const st = srv.threads.get(threadId);
+          if (st && st.turnId) srv.rpc("turn/interrupt", { threadId, turnId: st.turnId }, 10000).catch(() => {});
+        }
+      },
+    };
+
+    (async () => {
+      let srv;
+      try { srv = await getServer().ready; }
+      catch {
+        // app-server unavailable (older CLI?) -> classic per-turn exec
+        handle._fallback = runExec(opts);
+        if (handle.killed) handle.kill();
+        return;
+      }
+      try {
+        // Resolve this session's thread: reuse the warm binding when it matches
+        // the caller's resume id; otherwise resume from disk / start fresh.
+        let threadId = srv.sessions.get(sessionId);
+        if (threadId !== resumeId) threadId = null; // stale binding (agent switch, restart) — never continue the wrong thread
+        const threadConfig = {
+          // Registers the gateway's MCP tools per thread, replacing the exec
+          // path's -c TOML-string overrides with plain JSON (no shell quoting).
+          mcp_servers: {
+            wakili: {
+              command: "node",
+              args: [MCP_SERVER],
+              env: { WAKILI_SESSION: sessionId, WAKILI_GATEWAY: gatewayUrl, WAKILI_TOKEN: config.token },
+              default_tools_approval_mode: "approve",
+            },
+          },
+        };
+        if (!threadId && resumeId) {
+          await srv.rpc("thread/resume", { threadId: resumeId, cwd: cwd || undefined, approvalPolicy: "never", config: threadConfig });
+          threadId = resumeId;
+        } else if (!threadId) {
+          const r = await srv.rpc("thread/start", { model: controls.model || undefined, approvalPolicy: "never", cwd: cwd || undefined, config: threadConfig });
+          threadId = r && r.thread && r.thread.id;
+          if (!threadId) throw new Error("codex app-server: thread/start returned no thread id");
+        }
+        srv.sessions.set(sessionId, threadId);
+
+        const st = srv.threads.get(threadId) || { turn: null, sawDelta: new Set(), turnId: null };
+        srv.threads.set(threadId, st);
+        st.turn = { onEvent, onError, onClose };
+        handle._srv = srv;
+        handle._threadId = threadId;
+        clearTimeout(srv.idleTimer);
+        srv.active++;
+
+        // Same first-message gateway note as the exec path (see comment there).
+        const prompt = resumeId ? text : `[Gateway note: ${PHONE_DIRECTIVE} These tools come from the "wakili" MCP server; if they are not in your active toolset, discover them with your tool search.]\n\n${text}`;
+        const effort = clampEffort(controls.model, controls.effort || controls.reasoning || "");
+        await srv.rpc("turn/start", {
+          threadId,
+          input: [{ type: "text", text: prompt }],
+          model: controls.model || undefined,
+          effort: effort || undefined,
+          // Unlike exec (where sandbox is fixed at thread birth), the approval
+          // choice applies per turn — including on resumed sessions.
+          sandboxPolicy: SANDBOX_POLICY[controls.approval] || SANDBOX_POLICY["workspace-write"],
+          approvalPolicy: "never",
+        });
+        if (handle.killed) handle.kill(); // stop arrived while the turn was starting
+      } catch (e) {
+        const srvErr = String((e && e.message) || e);
+        const st = srv.threads.get(handle._threadId);
+        if (st && st.turn) {
+          if (st.turn.onError) st.turn.onError(srvErr);
+          endTurn(srv, handle._threadId, -1);
+        } else {
+          if (onError) onError(srvErr);
+          if (onClose) onClose(-1);
+        }
+      }
+    })();
+
+    return handle;
+  },
+};
+
+// Classic per-turn exec path: used when warm sessions are disabled
+// (WAKILI_WARM_TTL_MS=0) or the installed CLI has no usable app-server.
+function runExec({ text, controls = {}, resumeId, sessionId, cwd, gatewayUrl, onEvent, onError, onClose }) {
     const args = ["exec"];
     if (resumeId) args.push("resume", resumeId);
     args.push("--json", "--skip-git-repo-check");
@@ -263,8 +547,7 @@ export const codexAgent = {
       child.stdin.end();
     } catch { /* surfaced via the error handler above */ }
     return child;
-  },
-};
+}
 
 // Codex error payloads wrap the API's JSON error as a string, e.g.
 // '{"type":"error","status":400,"error":{"message":"The model requires…"}}' —

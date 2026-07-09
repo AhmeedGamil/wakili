@@ -17,7 +17,9 @@ import { tailscaleUrl, startCloudflare } from "./src/tunnel.mjs";
 import { listFolders, isDir, createFolder } from "./src/folders.mjs";
 import { qrTerminal } from "./src/qr.mjs";
 import { getAgent, listAgents } from "./src/agents/registry.mjs";
-import { commandsReady, modelsReady } from "./src/agents/claude.mjs";
+import { commandsReady, modelsReady, closeWarmClaude } from "./src/agents/claude.mjs";
+import { closeWarmSdk } from "./src/agents/claude-sdk.mjs";
+import { closeWarmCodex } from "./src/agents/codex.mjs";
 import { sessionStore } from "./src/sessions/store.mjs";
 import { subscribe, subscribeAll, publish } from "./src/sse.mjs";
 import { createPermission, waitPermission, resolvePermission } from "./src/permissions.mjs";
@@ -805,6 +807,9 @@ async function announceTunnel(mode) {
 
 function shutdown() {
   if (cloudflaredChild) { try { cloudflaredChild.kill(); } catch { /* already gone */ } }
+  closeWarmClaude(); // kill per-session warm agent processes so they don't outlive the gateway
+  closeWarmSdk();
+  closeWarmCodex();
   shutdownPower(); // release the keep-awake lock so the machine can sleep again
   process.exit(0);
 }

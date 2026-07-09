@@ -127,4 +127,9 @@ export const config = {
   runtimeDir: BASE_DIR,
   uploadsDir: path.join(BASE_DIR, "uploads"),
   defaultModel: "",
+  // Warm sessions: how long a session's agent process stays alive after a turn,
+  // waiting for the next message (skips the CLI's boot cost per message). After
+  // the TTL the process is killed; the next message cold-starts with --resume.
+  // Override with WAKILI_WARM_TTL_MS; 0 disables keeping processes warm.
+  warmTtlMs: Math.max(0, Number(process.env.WAKILI_WARM_TTL_MS ?? 15 * 60 * 1000) || 0),
 };
