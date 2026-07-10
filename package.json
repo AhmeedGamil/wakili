@@ -1,7 +1,19 @@
 {
   "name": "wakili",
-  "version": "0.2.0",
-  "description": "Phone gateway for Claude Code — chat with your local Claude Code sessions from your phone over LAN, Tailscale, or Cloudflare.",
+  "version": "0.2.1",
+  "description": "Phone gateway for Claude Code and ChatGPT Codex — chat with your local coding-agent sessions from your phone over LAN, Tailscale, or Cloudflare.",
+  "keywords": [
+    "claude-code",
+    "codex",
+    "chatgpt-codex",
+    "claude",
+    "ai-agent",
+    "phone",
+    "remote",
+    "gateway",
+    "tailscale",
+    "cloudflare"
+  ],
   "license": "MIT",
   "type": "module",
   "bin": {
