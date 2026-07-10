@@ -92,6 +92,17 @@ function handle(msg) {
         protocolVersion: params?.protocolVersion || "2024-11-05",
         capabilities: { tools: {} },
         serverInfo: { name: "wakili", version: "1.0.0" },
+        // Server-level directive, injected by clients at session start — it
+        // survives Codex's tool-search deferral (which hides only the tool
+        // descriptions below until searched). Kept short: the full "you MUST"
+        // phrasing still lives on each tool's description.
+        instructions:
+          "The user chats from a phone through the Wakili gateway and cannot open local file " +
+          "paths or answer questions asked as plain prose. When you create or end up with a " +
+          "file the user would want, call this server's send_to_user tool with its absolute " +
+          "path. When you need the user to choose, confirm, or decide between options, call " +
+          "ask_options. If these tools are not in your active toolset, find them with your " +
+          "tool search.",
       },
     });
   } else if (method === "tools/list") {

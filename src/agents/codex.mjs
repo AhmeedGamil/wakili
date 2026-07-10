@@ -3,7 +3,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { config, ROOT } from "../config.mjs";
-import { PHONE_DIRECTIVE } from "./claude.mjs";
 
 // --- Model discovery ---------------------------------------------------------
 // Codex keeps a fresh model list on disk (fetched from OpenAI, revalidated by
@@ -440,12 +439,10 @@ export const codexAgent = {
         clearTimeout(srv.idleTimer);
         srv.active++;
 
-        // Same first-message gateway note as the exec path (see comment there).
-        const prompt = resumeId ? text : `[Gateway note: ${PHONE_DIRECTIVE} These tools come from the "wakili" MCP server; if they are not in your active toolset, discover them with your tool search.]\n\n${text}`;
         const effort = clampEffort(controls.model, controls.effort || controls.reasoning || "");
         await srv.rpc("turn/start", {
           threadId,
-          input: [{ type: "text", text: prompt }],
+          input: [{ type: "text", text }],
           model: controls.model || undefined,
           effort: effort || undefined,
           // Unlike exec (where sandbox is fixed at thread birth), the approval
@@ -487,13 +484,11 @@ function runExec({ text, controls = {}, resumeId, sessionId, cwd, gatewayUrl, on
     args.push(...mcpOverrides({ sessionId, gatewayUrl })); // phone tools (send_to_user / ask_options), this run only
     args.push("-"); // read the prompt from stdin
 
-    // Codex (0.139+) defers MCP tools behind its tool-search layer: the model
-    // does NOT see them (or their descriptions) upfront, so unlike the Claude
-    // adapters the directives can't ride on mcp-tools.mjs alone. Instead the
-    // gateway note goes in ONCE per thread — the first message stays in the
-    // thread's history, so resumed turns keep the instruction without it being
-    // re-sent on every prompt.
-    const prompt = resumeId ? text : `[Gateway note: ${PHONE_DIRECTIVE} These tools come from the "wakili" MCP server; if they are not in your active toolset, discover them with your tool search.]\n\n${text}`;
+    // Codex defers MCP tool DESCRIPTIONS behind its tool-search layer, but it
+    // injects the server-level `instructions` from mcp-tools.mjs's initialize
+    // response at session start (verified on 0.144) — so the phone directives
+    // reach the model with no gateway note prepended to the first message.
+    const prompt = text;
 
     const child = spawn("codex", args, {
       shell: config.isWin,
