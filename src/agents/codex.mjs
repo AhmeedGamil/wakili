@@ -265,25 +265,6 @@ const armIdle = (srv) => {
 // both phone clients already render the exec path's snake_case names.
 const snakeCase = (s) => String(s).replace(/[A-Z]/g, (c) => "_" + c.toLowerCase());
 
-// Tool-chip inputs are persisted with the chat and pushed to the phone, and
-// some Codex items embed whole files as base64 — an imageGeneration item can
-// be megabytes of text, which freezes the app when the card opens. Deep-copy
-// with long strings truncated; everything a human would read on the card
-// (paths, prompts, commands, statuses) is far shorter than the cap.
-const MAX_ITEM_STRING = 2048;
-function slimItem(value) {
-  if (typeof value === "string") {
-    return value.length > MAX_ITEM_STRING ? value.slice(0, MAX_ITEM_STRING) + `… [${value.length - MAX_ITEM_STRING} more chars omitted]` : value;
-  }
-  if (Array.isArray(value)) return value.map(slimItem);
-  if (value && typeof value === "object") {
-    const out = {};
-    for (const [k, v] of Object.entries(value)) out[k] = slimItem(v);
-    return out;
-  }
-  return value;
-}
-
 function endTurn(srv, threadId, code) {
   const st = srv.threads.get(threadId);
   if (!st || !st.turn) return;
@@ -325,7 +306,7 @@ function routeNotification(srv, method, params) {
       }
     } else if (item.type !== "reasoning" && item.type !== "userMessage") {
       const name = item.type === "mcpToolCall" ? (item.tool || "mcp_tool_call") : snakeCase(item.type || "item");
-      turn.onEvent({ type: "assistant", message: { content: [{ type: "tool_use", name, input: slimItem(item), id: item.id }] } });
+      turn.onEvent({ type: "assistant", message: { content: [{ type: "tool_use", name, input: item, id: item.id }] } });
     }
   } else if (method === "error") {
     // willRetry errors are transient reconnect chatter; the terminal failure
@@ -611,7 +592,7 @@ function translate(evt, onEvent, onError) {
       // the real tool name (send_to_user, ask_options) — surface that, not
       // the generic "mcp_tool_call".
       const name = item.type === "mcp_tool_call" ? (item.tool || item.type) : (item.type || "item");
-      onEvent({ type: "assistant", message: { content: [{ type: "tool_use", name, input: slimItem(item), id: item.id }] } });
+      onEvent({ type: "assistant", message: { content: [{ type: "tool_use", name, input: item, id: item.id }] } });
     }
   }
 }
