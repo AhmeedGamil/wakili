@@ -165,10 +165,11 @@ function startServer() {
     alive: true,
     nextId: 0,
     pending: new Map(),  // rpc id -> { resolve, reject, timer }
-    threads: new Map(),  // threadId -> { turn, sawDelta, turnId }
+    threads: new Map(),  // threadId -> { turn, sawDelta, sawContent, turnId }
     sessions: new Map(), // wakili sessionId -> threadId (warm binding)
     active: 0,           // in-flight turns; 0 arms the idle kill timer
     idleTimer: null,
+    rateLimits: null,    // latest account/rateLimits/updated payload (limit diagnosis)
     ready: null,
   };
   const write = (obj) => { try { child.stdin.write(JSON.stringify(obj) + "\n"); } catch { /* dying; rpc timeouts handle it */ } };
@@ -270,15 +271,38 @@ function endTurn(srv, threadId, code) {
   const t = st.turn;
   st.turn = null;
   st.sawDelta.clear();
+  st.sawContent = false;
   srv.active = Math.max(0, srv.active - 1);
   if (srv.active === 0) armIdle(srv);
   t.onEvent({ type: "result", session_id: threadId }); // the session's resume id
   if (t.onClose) t.onClose(code);
 }
 
+// When the usage limit is exhausted Codex emits NO error at all: the turn
+// "completes" in ~1s with zero items, and the only trace is the rate-limit
+// metadata (primary window gone, credits.hasCredits false). The desktop app
+// synthesizes its limit banner client-side from that data — do the same here,
+// otherwise the phone just sees an empty reply.
+function emptyTurnMessage(rateLimits) {
+  const rl = rateLimits || {};
+  const used = rl.primary && rl.primary.usedPercent;
+  const credits = rl.credits || {};
+  const noCredits = (credits.hasCredits ?? credits.has_credits) === false;
+  if ((used != null && used >= 100) || (noCredits && !rl.primary)) {
+    const reset = (rl.primary && rl.primary.resetsAt) || (rl.secondary && rl.secondary.resetsAt);
+    const when = reset ? new Date(reset * 1000).toLocaleString() : null;
+    return `Codex usage limit reached${rl.planType ? ` (${rl.planType} plan)` : ""}.${when ? ` Limit resets ${when}.` : " Try again later."}`;
+  }
+  return "Codex returned an empty reply (the turn produced no output). This usually means the usage limit was hit — check your plan usage in Codex.";
+}
+
 // app-server notification -> Claude-shaped gateway events (same shapes the exec
 // path's translate() produces, so the web and Android clients need no changes).
 function routeNotification(srv, method, params) {
+  if (method === "account/rateLimits/updated") { // account-level (no threadId)
+    srv.rateLimits = params.rateLimits || null;
+    return;
+  }
   const st = params.threadId ? srv.threads.get(params.threadId) : null;
   if (!st) return;
   const turn = st.turn;
@@ -286,10 +310,12 @@ function routeNotification(srv, method, params) {
     st.turnId = params.turn && params.turn.id;
   } else if (method === "item/agentMessage/delta") {
     st.sawDelta.add(params.itemId);
+    st.sawContent = true;
     if (turn) turn.onEvent({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: params.delta } } });
   } else if (method === "item/completed") {
     const item = params.item;
     if (!item || !turn) return;
+    if (item.type !== "reasoning" && item.type !== "userMessage") st.sawContent = true;
     if (item.type === "agentMessage") {
       // Already streamed via deltas; only emit whole if no delta ever arrived.
       if (!st.sawDelta.has(item.id) && typeof item.text === "string") {
@@ -315,11 +341,13 @@ function routeNotification(srv, method, params) {
     // willRetry errors are transient reconnect chatter; the terminal failure
     // arrives with willRetry=false (and again on turn/completed's status).
     if (!params.willRetry && turn && turn.onError) {
+      st.sawContent = true; // a banner was shown — don't add the empty-turn one too
       turn.onError(errorText(params.error && params.error.message ? params.error.message : params.error));
     }
   } else if (method === "turn/completed") {
     const t = params.turn || {};
     if (t.status === "failed" && t.error && t.error.message && turn && turn.onError) turn.onError(errorText(t.error.message));
+    else if (t.status !== "failed" && turn && !st.sawContent && turn.onError) turn.onError(emptyTurnMessage(srv.rateLimits));
     endTurn(srv, params.threadId, t.status === "failed" ? 1 : 0);
   }
 }
@@ -431,7 +459,7 @@ export const codexAgent = {
         }
         srv.sessions.set(sessionId, threadId);
 
-        const st = srv.threads.get(threadId) || { turn: null, sawDelta: new Set(), turnId: null };
+        const st = srv.threads.get(threadId) || { turn: null, sawDelta: new Set(), sawContent: false, turnId: null };
         srv.threads.set(threadId, st);
         st.turn = { onEvent, onError, onClose };
         handle._srv = srv;
@@ -516,6 +544,15 @@ function runExec({ text, controls = {}, resumeId, sessionId, cwd, gatewayUrl, on
       onError && onError(msg);
     };
 
+    // Track whether the turn produced anything visible: a usage-limit turn
+    // "succeeds" with zero items (see emptyTurnMessage above) and would
+    // otherwise show as a blank reply.
+    let sawContent = false;
+    const forward = (evt) => {
+      if (evt.type === "stream_event" || evt.type === "assistant") sawContent = true;
+      onEvent(evt);
+    };
+
     let buf = "";
     child.stdout.on("data", (chunk) => {
       buf += chunk.toString();
@@ -526,12 +563,17 @@ function runExec({ text, controls = {}, resumeId, sessionId, cwd, gatewayUrl, on
         if (!line) continue;
         let evt;
         try { evt = JSON.parse(line); } catch { continue; }
-        translate(evt, onEvent, reportError);
+        translate(evt, forward, reportError);
       }
     });
     child.stderr.on("data", (d) => onError && onError(d.toString()));
     let closed = false;
-    const closeOnce = (code) => { if (!closed) { closed = true; onClose && onClose(code); } };
+    const closeOnce = (code) => {
+      if (closed) return;
+      closed = true;
+      if (code === 0 && !sawContent && !lastError && onError) onError(emptyTurnMessage(null));
+      onClose && onClose(code);
+    };
     child.on("close", closeOnce);
     // A failed spawn (bad cwd, missing binary) emits 'error', not 'close'. Without
     // this handler that error is unhandled and takes down the whole gateway.
