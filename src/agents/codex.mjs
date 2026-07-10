@@ -367,7 +367,7 @@ function routeNotification(srv, method, params) {
 
 export const codexAgent = {
   id: "codex",
-  label: "Codex",
+  label: "ChatGPT Codex",
   description: "OpenAI's Codex CLI, run by spawning it and streaming its output.",
 
   // Discovered fresh each manifest request so newly added custom prompts appear.
