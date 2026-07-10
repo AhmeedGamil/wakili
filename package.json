@@ -1,6 +1,6 @@
 {
   "name": "wakili",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Phone gateway for Claude Code — chat with your local Claude Code sessions from your phone over LAN, Tailscale, or Cloudflare.",
   "license": "MIT",
   "type": "module",

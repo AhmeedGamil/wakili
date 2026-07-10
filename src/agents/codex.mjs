@@ -229,7 +229,7 @@ function startServer() {
   child.on("error", die);
 
   srv.ready = (async () => {
-    await srv.rpc("initialize", { clientInfo: { name: "wakili", title: "Wakili", version: "0.1.0" } }, 15000);
+    await srv.rpc("initialize", { clientInfo: { name: "wakili", title: "Wakili", version: config.version } }, 15000);
     write({ jsonrpc: "2.0", method: "initialized", params: {} });
     return srv;
   })();

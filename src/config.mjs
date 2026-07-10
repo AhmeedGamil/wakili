@@ -98,6 +98,13 @@ const EDITOR_ENTRYPOINT = "claude-vscode";
 
 const port = Number(process.env.PORT) || 8730;
 
+// The package version, read once so everything that reports it (e.g. the codex
+// app-server handshake) stays in sync with package.json on every bump.
+function loadVersion() {
+  try { return JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version || "0.0.0"; }
+  catch { return "0.0.0"; }
+}
+
 // Shared secret that gates the gateway once it's reachable beyond the LAN (via a
 // tunnel). Order: explicit env, then a persisted file, else generate + persist
 // so the token is stable across restarts. The phone gets it once via the URL.
@@ -117,6 +124,7 @@ function loadToken() {
 export const config = {
   port,
   token: loadToken(),
+  version: loadVersion(),
   // Resolved entrypoint tag (see EDITOR_ENTRYPOINT above). Env override wins, so
   // you can switch editors per-launch without editing code.
   claudeEntrypoint: process.env.WAKILI_CLAUDE_ENTRYPOINT || EDITOR_ENTRYPOINT,
