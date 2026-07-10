@@ -43,6 +43,8 @@ export function diffBody(name, input) {
 // Header: a per-tool icon + the tool and the full path it touches (+ line range
 // for Read). Bash has no path, so it shows its description instead (or just
 // "Bash" when there's none). The title wraps so a long path shows in full.
+// Claude's WebSearch/WebFetch and codex's web_search item all count as web.
+const isWebTool = (name) => /^web_?(search|fetch)/i.test(name);
 function headIcon(name) {
   if (name === "Bash" || name === "PowerShell") return "terminal";
   if (EDIT_TOOLS.has(name)) return "pencil";
@@ -50,6 +52,7 @@ function headIcon(name) {
   if (name === "Grep") return "search";
   if (name === "Glob") return "folder";
   if (name === "Task" || name === "Agent") return "bot";
+  if (isWebTool(name)) return "globe";
   return "wrench";
 }
 function headLabel(name, input) {
@@ -63,6 +66,9 @@ function headLabel(name, input) {
   if (name === "Glob" && obj && obj.pattern) return 'Glob pattern: "' + obj.pattern + '"';
   const f = fileOf(input);
   if (f) return name + " · " + f + lineRange(name, input);
+  // Web tools are about the query/URL — surface it so the card isn't a bare name.
+  if (obj && typeof obj.query === "string" && obj.query.trim()) return name + " · " + obj.query.trim();
+  if (obj && typeof obj.url === "string" && obj.url.trim()) return name + " · " + obj.url.trim();
   // Any other tool that carries a human description (PowerShell, MCP tools, …)
   // surfaces it like Bash does, instead of showing a bare name.
   const d = obj && typeof obj.description === "string" ? obj.description.trim() : "";
