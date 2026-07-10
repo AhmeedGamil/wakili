@@ -31,15 +31,7 @@ function loadCodexModels() {
     const models = (Array.isArray(data && data.models) ? data.models : [])
       .filter((m) => m && m.slug && m.visibility === "list")
       .sort((a, b) => (a.priority ?? 999) - (b.priority ?? 999));
-    const opts = models.map((m) => ({
-      value: m.slug,
-      label: m.display_name || titleFromSlug(m.slug),
-      // The catalog declares each model's efforts (supported_reasoning_levels)
-      // with descriptions — the source of truth for the Effort control.
-      efforts: Array.isArray(m.supported_reasoning_levels)
-        ? m.supported_reasoning_levels.filter((l) => l && l.effort).map((l) => ({ effort: l.effort, description: l.description || "" }))
-        : null,
-    }));
+    const opts = models.map((m) => ({ value: m.slug, label: m.display_name || titleFromSlug(m.slug) }));
     return opts.length ? opts : null;
   } catch { return null; }
 }
@@ -47,40 +39,29 @@ function loadCodexModels() {
 const CODEX_MODELS = loadCodexModels() || FALLBACK_MODELS;
 
 // --- Reasoning effort ----------------------------------------------------------
-// Each model's effort list comes straight from Codex's model catalog (see
-// loadCodexModels): e.g. Terra takes max + ultra, Luna stops at max, gpt-5.5 at
-// xhigh. The control's `optionsFor` map gives the UI the exact list per model;
-// plain `options` is the union fallback for clients that don't know optionsFor —
-// run() clamps an unsupported pick down to the nearest level the selected model
-// takes, so a stale saved value can't fail the turn. The ladder is only the
-// clamping order plus the heuristic for models the catalog didn't describe.
-const EFFORT_LADDER = ["low", "medium", "high", "xhigh", "max", "ultra"];
-const EFFORT_LABELS = { low: "Light", medium: "Medium", high: "High", xhigh: "Extra High", max: "Max", ultra: "Ultra" };
+// Matches the Codex app's picker: every model takes low..xhigh, and the top-tier
+// 5.6 models (Sol, Terra) additionally take `ultra` (multi-agent orchestration).
+// The catalog file also advertises a `max` level, but the app doesn't offer it —
+// we follow the app. `optionsFor` gives the UI the exact list per model; plain
+// `options` is the union fallback for clients that don't know optionsFor —
+// run() clamps an unsupported pick down to the selected model's ceiling so a
+// stale saved value can't fail the turn.
+const EFFORT_LADDER = ["low", "medium", "high", "xhigh", "ultra"];
+const EFFORT_LABELS = { low: "Light", medium: "Medium", high: "High", xhigh: "Extra High", ultra: "Ultra" };
 
-function supportedEfforts(model) {
-  const m = CODEX_MODELS.find((x) => x.value === model);
-  if (m && m.efforts && m.efforts.length) return m.efforts;
-  // Catalog didn't say (static fallback list / unknown model): 5.6 models take
-  // max, Sol and Terra also ultra, everything else stops at xhigh.
-  const ceiling = /^gpt-5\.6-(sol|terra)/.test(model || "") ? "ultra" : /^gpt-5\.6/.test(model || "") ? "max" : "xhigh";
-  return EFFORT_LADDER.slice(0, EFFORT_LADDER.indexOf(ceiling) + 1).map((e) => ({ effort: e, description: "" }));
+function effortCeiling(model) {
+  return /^gpt-5\.6-(sol|terra)/.test(model || "") ? "ultra" : "xhigh";
 }
 
-function effortOptions(model) {
-  return [
-    { value: "", label: "Default" },
-    ...supportedEfforts(model).map((l) => ({ value: l.effort, label: EFFORT_LABELS[l.effort] || titleFromSlug(l.effort), description: l.description || undefined })),
-  ];
+function effortOptions(ceiling) {
+  const cut = EFFORT_LADDER.indexOf(ceiling) + 1;
+  return [{ value: "", label: "Default" }, ...EFFORT_LADDER.slice(0, cut).map((v) => ({ value: v, label: EFFORT_LABELS[v] }))];
 }
 
 function clampEffort(model, effort) {
-  if (!effort) return ""; // unset -> Codex default
-  const supported = supportedEfforts(model).map((l) => l.effort);
-  if (supported.includes(effort)) return effort;
-  for (let i = EFFORT_LADDER.indexOf(effort); i >= 0; i--) {
-    if (supported.includes(EFFORT_LADDER[i])) return EFFORT_LADDER[i];
-  }
-  return "";
+  const idx = EFFORT_LADDER.indexOf(effort);
+  if (idx === -1) return ""; // unset or unknown (e.g. a stale saved "max") -> Codex default
+  return EFFORT_LADDER[Math.min(idx, EFFORT_LADDER.indexOf(effortCeiling(model)))];
 }
 
 // --- Slash commands ----------------------------------------------------------
@@ -366,19 +347,13 @@ export const codexAgent = {
       label: "Model",
       // Read from Codex's own model cache at startup (see loadCodexModels above).
       default: CODEX_MODELS[0].value,
-      options: CODEX_MODELS.map(({ value, label }) => ({ value, label })),
+      options: CODEX_MODELS,
     },
     effort: {
       label: "Effort",
       default: "",
-      // Union of every model's levels — the fallback for clients that don't
-      // know optionsFor; run() clamps per model at spawn.
-      options: [
-        { value: "", label: "Default" },
-        ...EFFORT_LADDER.filter((e) => CODEX_MODELS.some((m) => supportedEfforts(m.value).some((l) => l.effort === e)))
-          .map((e) => ({ value: e, label: EFFORT_LABELS[e] || titleFromSlug(e) })),
-      ],
-      optionsFor: Object.fromEntries(CODEX_MODELS.map((m) => [m.value, effortOptions(m.value)])),
+      options: effortOptions("ultra"), // union fallback; run() clamps per model
+      optionsFor: Object.fromEntries(CODEX_MODELS.map((m) => [m.value, effortOptions(effortCeiling(m.value))])),
     },
     // Codex's approval/sandbox posture (Codex's own three modes). Applied on a
     // fresh session; a resumed session inherits the sandbox it was created with.
