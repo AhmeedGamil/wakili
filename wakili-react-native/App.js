@@ -21,7 +21,7 @@ import { useCameraPermissions } from "expo-camera";
 import { WebView } from "react-native-webview";
 
 import { colors } from "./src/theme";
-import { loadNetworks, persist, upsert, probeName, looksLikeServerUrl, autoName } from "./src/networks";
+import { loadNetworks, persist, upsert, probeName, probeEndpoints, looksLikeServerUrl, autoName } from "./src/networks";
 import { LoadingOverlay } from "./src/components/LoadingOverlay";
 import { ScanScreen } from "./src/components/ScanScreen";
 import { ConnectScreen } from "./src/components/ConnectScreen";
@@ -51,14 +51,39 @@ function Root() {
   activeIdRef.current = activeId;
   const connectViewRef = useRef(false);
   connectViewRef.current = connectView;
+  const netsRef = useRef([]);
+  netsRef.current = nets;
 
   const active = nets.find((n) => n.id === activeId) || null;
+
+  // Learn a computer's OTHER addresses from the gateway itself (LAN, Tailscale,
+  // Cloudflare — /api/endpoints) and save them as sibling hosts, so the hosts
+  // page offers every path even though only one was ever scanned. Runs silently:
+  // an unreachable or older gateway just adds nothing.
+  const discoverSiblings = (url) => {
+    if (!looksLikeServerUrl(url)) return;
+    Promise.all([probeEndpoints(url), probeName(url)]).then(([endpoints, hostname]) => {
+      if (!endpoints.length) return;
+      setNets((cur) => {
+        let next = cur;
+        for (const e of endpoints) {
+          const r = upsert(next, e.url, hostname ? autoName(e.url, hostname) : undefined);
+          next = r.networks;
+        }
+        persist(next, activeIdRef.current).catch(() => {});
+        return next;
+      });
+    });
+  };
 
   useEffect(() => {
     loadNetworks().then(({ networks, activeId: id }) => {
       setNets(networks);
       setActiveId(id);
       setBooted(true);
+      // Pick up paths added since the last launch (e.g. Tailscale installed later).
+      const act = networks.find((n) => n.id === id);
+      if (act) discoverSiblings(act.url);
     });
   }, []);
 
@@ -107,6 +132,7 @@ function Root() {
         return next;
       });
     });
+    discoverSiblings(u); // and offer this computer's other paths (LAN/Tailscale/...)
   };
 
   const removeNetwork = (id) => {
@@ -171,9 +197,12 @@ function Root() {
       return;
     }
     // Settings → Connection → "Saved computers": show the computers page over
-    // the live session (the WebView stays mounted underneath).
+    // the live session (the WebView stays mounted underneath). Refresh the
+    // active gateway's sibling paths so the list is complete when it opens.
     if (msg.wakiliNetworks) {
       setConnectView(true);
+      const act = netsRef.current.find((n) => n.id === activeIdRef.current);
+      if (act) discoverSiblings(act.url);
       return;
     }
   }, []);

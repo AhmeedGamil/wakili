@@ -5,12 +5,12 @@
 //   - opened on demand (Settings → Connection → Add or change the host),
 //     overlaying the live session.
 // The saved hosts live in a DROPDOWN labeled "Current host": collapsed it's a
-// single row (the selection), so it never pushes Connect / Scan QR down no
-// matter how many hosts are saved; expanded it lists the options in a bounded,
-// scrollable box. Connect acts on the selection — retrying the current host
-// and switching to another are the same gesture. Each option has a two-tap
-// Remove (so a token isn't lost by a slip). Names are derived
-// (hostname-lan / hostname-tailscale, see networks.js).
+// single row (the selection); expanded, the options render in an absolutely
+// positioned box that FLOATS OVER the buttons below — opening it never shifts
+// Connect / Scan QR, no matter how many hosts are saved. Connect acts on the
+// selection — retrying the current host and switching to another are the same
+// gesture. Each option has a two-tap Remove (so a token isn't lost by a slip).
+// Names are derived (hostname-lan / hostname-tailscale, see networks.js).
 
 import { useState } from "react";
 import {
@@ -157,7 +157,9 @@ const styles = StyleSheet.create({
   logo: { width: 96, height: 96, marginBottom: 12 },
   title: { color: colors.text, fontSize: 28, fontWeight: "700", marginBottom: 8 },
   sub: { color: colors.muted, fontSize: 15, textAlign: "center", marginBottom: 24, lineHeight: 22 },
-  listWrap: { alignSelf: "stretch", marginBottom: 12 },
+  // zIndex lifts the whole wrap above the buttons that follow it, so the
+  // absolutely-positioned menu draws over them instead of pushing them down.
+  listWrap: { alignSelf: "stretch", marginBottom: 12, zIndex: 20 },
   listLabel: { color: colors.subtle, fontSize: 13, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.5 },
   select: {
     flexDirection: "row",
@@ -172,6 +174,13 @@ const styles = StyleSheet.create({
   selectOpen: { borderColor: colors.accent, borderBottomLeftRadius: 0, borderBottomRightRadius: 0 },
   chevron: { color: colors.muted, fontSize: 12, marginLeft: 10 },
   menu: {
+    // Floats below the select row, over whatever follows — no layout shift.
+    position: "absolute",
+    top: "100%",
+    left: 0,
+    right: 0,
+    zIndex: 30,
+    elevation: 8, // Android: draw above siblings (zIndex alone isn't enough with a WebView around)
     backgroundColor: colors.card,
     borderWidth: 1,
     borderTopWidth: 0,

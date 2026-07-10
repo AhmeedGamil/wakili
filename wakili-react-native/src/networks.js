@@ -79,6 +79,28 @@ export function upsert(networks, url, name) {
   return { networks: [...networks, net], id: net.id };
 }
 
+// Ask the gateway which addresses it is reachable on (LAN / Tailscale /
+// Cloudflare, each URL carrying the token). Lets the hosts page offer the same
+// computer's OTHER paths — e.g. its LAN address when only the Tailscale QR was
+// ever scanned. Older gateways without /api/endpoints or unreachable ones
+// yield an empty list.
+export async function probeEndpoints(url) {
+  const origin = originOf(url);
+  if (!origin) return [];
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 4000);
+  try {
+    const r = await fetch(`${origin}/api/endpoints`, { headers: { "x-auth-token": tokenOf(url) }, signal: ctl.signal });
+    if (!r.ok) return [];
+    const j = await r.json();
+    return Array.isArray(j) ? j.filter((e) => e && looksLikeServerUrl(e.url)) : [];
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Ask the gateway who it is, so a freshly added network gets labelled with the
 // computer's real name ("AHMED-PC") instead of a bare ip:port. Gateways without
 // /api/host (older versions) or unreachable ones just yield null.
