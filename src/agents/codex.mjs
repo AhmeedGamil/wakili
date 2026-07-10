@@ -351,7 +351,7 @@ export const codexAgent = {
     },
     effort: {
       label: "Effort",
-      default: "",
+      default: "medium", // Codex's own default level; "Default" stays available to defer to the CLI
       options: effortOptions("ultra"), // union fallback; run() clamps per model
       optionsFor: Object.fromEntries(CODEX_MODELS.map((m) => [m.value, effortOptions(effortCeiling(m.value))])),
     },
