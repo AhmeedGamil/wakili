@@ -304,6 +304,10 @@ function routeNotification(srv, method, params) {
       if (out || isError) {
         turn.onEvent({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, content: String(out), is_error: isError }] } });
       }
+    } else if (item.type === "imageGeneration" || item.type === "imageView") {
+      // Never forwarded: these items embed the image itself as base64 —
+      // megabytes of text that freeze the phone rendering the card. Images
+      // reach the user only through send_to_user (a real file + URL).
     } else if (item.type !== "reasoning" && item.type !== "userMessage") {
       const name = item.type === "mcpToolCall" ? (item.tool || "mcp_tool_call") : snakeCase(item.type || "item");
       turn.onEvent({ type: "assistant", message: { content: [{ type: "tool_use", name, input: item, id: item.id }] } });
@@ -587,6 +591,9 @@ function translate(evt, onEvent, onError) {
       if (out || isError) {
         onEvent({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: id, content: String(out), is_error: isError }] } });
       }
+    } else if (item.type === "image_generation" || item.type === "image_view") {
+      // Never forwarded: image items embed the image as base64 (see the
+      // app-server path above for the reasoning).
     } else if (item.type !== "reasoning") {
       // file edits, web searches, etc. -> show as a tool chip. MCP calls carry
       // the real tool name (send_to_user, ask_options) — surface that, not
