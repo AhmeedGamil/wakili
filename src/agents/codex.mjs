@@ -129,6 +129,22 @@ function mcpOverrides({ sessionId, gatewayUrl }) {
   ];
 }
 
+// codex app-server never injects an MCP server's `instructions` into the model
+// context (verified on 0.144: they surface only in tool-search results), and
+// tool DESCRIPTIONS are deferred behind tool search too — so a warm thread
+// starts with zero mention of the phone tools and the model prints file paths
+// instead of delivering files. thread/start and thread/resume accept
+// `developerInstructions` (lands as a developer-role message at the top of the
+// thread); the phone directive rides there. The exec path doesn't need this:
+// it injects the MCP `instructions` from mcp-tools.mjs on its own.
+const PHONE_DIRECTIVE =
+  "The user chats from a phone through the Wakili gateway and cannot open local file " +
+  "paths or answer questions asked as plain prose. When you create or end up with a " +
+  "file the user would want, deliver it with the mcp__wakili__send_to_user tool " +
+  "(absolute path) — never just print the path. When you need the user to choose, " +
+  "confirm, or decide between options, use mcp__wakili__ask_options. If these tools " +
+  "are not in your active toolset, find them with your tool search.";
+
 // Map the phone's approval choice to Codex's sandbox / approval flags.
 //   read-only      -> "Ask for approval": Codex can only read; risky actions are held back
 //   workspace-write -> "Approve for me":  auto-approve edits/commands inside the workspace
@@ -450,10 +466,10 @@ export const codexAgent = {
           },
         };
         if (!threadId && resumeId) {
-          await srv.rpc("thread/resume", { threadId: resumeId, cwd: cwd || undefined, approvalPolicy: "never", config: threadConfig });
+          await srv.rpc("thread/resume", { threadId: resumeId, cwd: cwd || undefined, approvalPolicy: "never", developerInstructions: PHONE_DIRECTIVE, config: threadConfig });
           threadId = resumeId;
         } else if (!threadId) {
-          const r = await srv.rpc("thread/start", { model: controls.model || undefined, approvalPolicy: "never", cwd: cwd || undefined, config: threadConfig });
+          const r = await srv.rpc("thread/start", { model: controls.model || undefined, approvalPolicy: "never", cwd: cwd || undefined, developerInstructions: PHONE_DIRECTIVE, config: threadConfig });
           threadId = r && r.thread && r.thread.id;
           if (!threadId) throw new Error("codex app-server: thread/start returned no thread id");
         }
