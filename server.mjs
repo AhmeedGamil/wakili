@@ -20,13 +20,18 @@ import { getAgent, listAgents } from "./src/agents/registry.mjs";
 import { commandsReady, modelsReady, closeWarmClaude } from "./src/agents/claude.mjs";
 import { closeWarmSdk } from "./src/agents/claude-sdk.mjs";
 import { closeWarmCodex } from "./src/agents/codex.mjs";
-import { sessionStore } from "./src/sessions/store.mjs";
+import { sessionStore, onSessionSave } from "./src/sessions/store.mjs";
 import { subscribe, subscribeAll, publish } from "./src/sse.mjs";
 import { createPermission, waitPermission, resolvePermission } from "./src/permissions.mjs";
 import { lockScreen, screenOff, setKeepAwake, powerStatus, shutdownPower, shutdownComputer } from "./src/power.mjs";
 import { autostartStatus, setAutostart, reconcileAutostart, enrollAutostartOnce, refreshAutostart } from "./src/autostart.mjs";
 
 const EDIT_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]); // auto-approved under acceptEdits
+
+// Every session save becomes a push invalidation on the live stream: clients
+// holding a cached copy compare updatedAt and refetch (as a delta) only what
+// actually moved — this is what lets the sidebar poll drop to a slow safety net.
+onSessionSave((s) => publish(s.id, { type: "_gateway", subtype: "session_updated", updatedAt: s.updatedAt, title: s.title }));
 const busy = new Set(); // session ids with an in-flight turn
 const children = new Map(); // sessionId -> spawned agent child process (for stop/interrupt)
 
@@ -377,11 +382,29 @@ const server = http.createServer(async (req, res) => {
       const id = mm[1];
       if (m === "GET") {
         const s = await sessionStore.get(id);
+        if (!s) return notFound(res);
+        // Conditional GET: a client holding a cached copy sends the updatedAt it
+        // has (?since=) — when nothing moved, answer with a tiny stub instead of
+        // the whole transcript.
+        const since = url.searchParams.get("since");
+        if (since !== null && Number(since) === s.updatedAt) {
+          return json(res, 200, { unchanged: true, updatedAt: s.updatedAt, busy: busy.has(id), pending: pendingCards.get(id)?.size || 0 });
+        }
         // Include the in-progress turn's parts so a (re)opening client can paint
         // the streamed-so-far content immediately instead of waiting a resync
         // round trip. The resync snapshot stays authoritative (it's ordered with
         // live events on the stream); the client replaces this copy when it lands.
-        return s ? json(res, 200, { ...withMeta(s), parts: activeTurns.get(id) || [] }) : notFound(res);
+        const parts = activeTurns.get(id) || [];
+        // Delta GET: ?after=<count> returns only the messages past what the
+        // client already has. Messages are append-only, so the array index is a
+        // valid cursor; anything out of range falls through to the full payload.
+        const after = url.searchParams.get("after");
+        const n = after === null ? NaN : Number(after);
+        if (Number.isInteger(n) && n >= 0 && n <= s.messages.length) {
+          const { messages, ...meta } = withMeta(s);
+          return json(res, 200, { ...meta, delta: true, after: n, messages: messages.slice(n), parts });
+        }
+        return json(res, 200, { ...withMeta(s), parts });
       }
       if (m === "PATCH") {
         const b = await readBody(req);
