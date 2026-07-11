@@ -76,7 +76,9 @@ export function createTerminalPage({ onRun }) {
 
   const pathEl = el("span", { class: "term-path", text: "" });
   const head = el("div", { class: "fp-head term-head" },
-    el("button", { class: "head-x", type: "button", title: "Close", "aria-label": "Close", onClick: close }, icon("x")),
+    // Back (not ×): leaving the page loses nothing — every terminal keeps its
+    // scrollback — so the affordance matches the native (Kotlin) app's back arrow.
+    el("button", { class: "head-x", type: "button", title: "Back", "aria-label": "Back", onClick: close }, icon("corner-up-left")),
     el("div", { class: "term-head-left" }, icon("terminal"), el("strong", { text: "Terminal" })),
   );
   const tabsBar = el("div", { class: "term-tabs" });
