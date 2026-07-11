@@ -2,7 +2,7 @@
 // stack of modern dropdowns: Agent, Model (for that agent), then the agent's
 // other settings. Switching agent just updates the Model dropdown in place.
 
-import { el, dismissFirst } from "./dom.js";
+import { el, dismissFirst, backdropFor } from "./dom.js";
 import { createDropdown } from "./Dropdown.js";
 
 export function createModelPicker({ onPickAgent, onPickModel, onControlChange, onToggleAutoAllow }) {
@@ -12,7 +12,8 @@ export function createModelPicker({ onPickAgent, onPickModel, onControlChange, o
   const root = el("div", { class: "picker" }, trigger, pop);
 
   let open = false;
-  const setOpen = (v) => { open = v; v ? pop.removeAttribute("hidden") : pop.setAttribute("hidden", ""); };
+  const bd = backdropFor(pop, () => setOpen(false));
+  const setOpen = (v) => { open = v; if (v) { pop.removeAttribute("hidden"); bd.show(); } else { pop.setAttribute("hidden", ""); bd.hide(); } };
   trigger.addEventListener("click", (e) => { e.stopPropagation(); setOpen(!open); });
   dismissFirst(() => open, (t) => root.contains(t), () => setOpen(false));
 

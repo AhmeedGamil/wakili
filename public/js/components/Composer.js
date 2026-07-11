@@ -10,7 +10,7 @@
 // args (or just press Enter) — the command is then sent to the agent like any turn.
 // The command list comes from the backend per agent; setCommands() swaps it.
 
-import { el, dismissFirst } from "./dom.js";
+import { el, dismissFirst, backdropFor } from "./dom.js";
 import { icon } from "./icons.js";
 
 export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal, onUpload, onRemoveUpload, commands = [] }) {
@@ -170,7 +170,8 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
   }
 
   // ---- + (add) menu: attach Images / Files, or open the Terminal page ----
-  function closeAddMenu() { addMenu.setAttribute("hidden", ""); }
+  const addBd = backdropFor(addMenu, closeAddMenu);
+  function closeAddMenu() { addMenu.setAttribute("hidden", ""); addBd.hide(); }
   function openAddMenu() {
     addMenu.innerHTML = "";
     addMenu.append(
@@ -185,6 +186,7 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
         icon("terminal"), el("span", { text: "Terminal" })),
     );
     addMenu.removeAttribute("hidden");
+    addBd.show();
   }
   attachBtn.onclick = () => { if (addMenu.hasAttribute("hidden")) openAddMenu(); else closeAddMenu(); };
   // Read picked files to base64; the full data URL doubles as the image preview.

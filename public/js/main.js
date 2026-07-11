@@ -207,13 +207,14 @@ const backLayers = [
   { isOpen: () => !!document.querySelector(".lb-overlay:not([hidden])"),
     close: () => document.querySelector(".lb-overlay:not([hidden])")?.setAttribute("hidden", "") },
   // Transient popovers (also dismiss on an outside tap; back closes them too):
-  // topbar model picker, composer's slash / + menus, sidebar's filter popover.
-  { isOpen: () => picker.isOpen() || composer.menusOpen() || !!document.querySelector(".sess-pop:not([hidden])"),
+  // topbar model picker, composer's slash / + menus, sidebar's filter popover
+  // and long-press context menu. Always through each component's own close so
+  // the popover's backdrop shield is removed with it.
+  { isOpen: () => picker.isOpen() || composer.menusOpen() || sidebar.menusOpen(),
     close: () => {
       if (picker.isOpen()) return picker.close();
       if (composer.menusOpen()) return composer.closeMenus();
-      const p = document.querySelector(".sess-pop:not([hidden])");
-      if (p) p.hidden = true;
+      sidebar.closeMenus();
     } },
   // Full-screen / modal overlays.
   { isOpen: () => folderPicker.isOpen(), close: () => folderPicker.close() },

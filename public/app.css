@@ -182,6 +182,10 @@ body {
 .sess-ctx-row .btn { padding: 6px 12px; font-size: 13px; }
 
 /* centered delete-confirmation dialog */
+/* invisible shield under an open popover (see backdropFor in dom.js) —
+   touch-action: none blocks scroll gestures at the browser level */
+.pop-backdrop { position: fixed; inset: 0; background: transparent; touch-action: none; -webkit-tap-highlight-color: transparent; }
+
 .confirm-overlay { position: fixed; inset: 0; z-index: 120; background: rgba(0, 0, 0, .45); display: flex; align-items: center; justify-content: center; padding: 24px; }
 .confirm-panel { width: min(360px, 92vw); background: var(--panel); border: 1px solid var(--border); border-radius: 16px; box-shadow: 0 24px 64px rgba(0, 0, 0, .5); padding: 20px 18px 16px; }
 .confirm-title { font-size: 17px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
@@ -570,6 +574,17 @@ body {
    exit via the × in its header (or the app's back button). */
 .term-overlay { padding: 0; }
 .term-panel { padding: 0; width: 100%; max-width: 100%; height: 100dvh; max-height: 100dvh; border-radius: 0; border: 0; box-shadow: none; }
+/* header padding matches the topbar's, so the close circle sits exactly where
+   the sidebar menu button does on the chat screen */
+.term-head { justify-content: flex-start; gap: 12px; padding: 10px 12px; }
+/* circular close button on the left of a page header — same recipe as .icon-btn.round */
+.head-x {
+  width: 42px; height: 42px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--pill); border: 1px solid var(--border); color: var(--text);
+  font-size: 19px; padding: 0; cursor: pointer; transition: background .12s;
+}
+.head-x:hover, .head-x:active { background: var(--panel-2); }
 .term-head-left { display: flex; align-items: center; gap: 8px; }
 .term-head-left svg { width: 18px; height: 18px; color: var(--accent); }
 /* terminal tabs: one per shell, + to open another, × asks before closing */
@@ -710,13 +725,20 @@ body {
 .guide-btns .btn.primary { width: auto; padding: 8px 20px; }
 
 /* ---- full-screen image viewer (media.js) — replaces opening images in a tab ---- */
-.lb-overlay { position: fixed; inset: 0; z-index: 90; background: rgba(0,0,0,.92); display: flex; flex-direction: column; }
+.lb-overlay { position: fixed; inset: 0; z-index: 90; background: var(--bg); }
 .lb-overlay[hidden] { display: none; }
-.lb-bar { display: flex; justify-content: flex-end; gap: 8px; padding: 12px; padding-top: calc(12px + env(safe-area-inset-top)); }
-.lb-btn { display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 14px; color: #fff; background: rgba(255,255,255,.14); border: 0; border-radius: 10px; padding: 10px 14px; cursor: pointer; }
-.lb-btn:active { background: rgba(255,255,255,.26); }
-.lb-btn svg { width: 18px; height: 18px; }
-.lb-img { flex: 1; min-height: 0; width: 100%; object-fit: contain; padding: 0 12px calc(16px + env(safe-area-inset-bottom)); }
+/* The image fills the whole page; the two buttons float over it, mirroring the
+   topbar's round menu button — same size, style, and screen position (close on
+   the left where the menu button sits, download mirrored on the right). */
+.lb-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; padding: 0; }
+.lb-bar { position: absolute; top: 10px; left: 12px; right: 12px; z-index: 1; display: flex; justify-content: space-between; }
+.lb-btn {
+  width: 42px; height: 42px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--pill); border: 1px solid var(--border); color: var(--text);
+  font-size: 19px; padding: 0; cursor: pointer; transition: background .12s;
+}
+.lb-btn:hover, .lb-btn:active { background: var(--panel-2); }
 /* These used to be <a href> (pointer by default); now they're tap handlers. */
 .att-msg.img, .att-msg-link, .file-img-link, .file-link, .ft-imglink, .ft-file { cursor: pointer; }
 

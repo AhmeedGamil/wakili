@@ -9,7 +9,7 @@
 // menu; Delete asks for confirmation before it reports the intent.
 // Pure UI — it renders from data and reports user intent through callbacks.
 
-import { el, dismissFirst } from "./dom.js";
+import { el, dismissFirst, backdropFor } from "./dom.js";
 import { icon } from "./icons.js";
 
 const VIEW_KEY = "ra-session-view"; // "project" | "all"
@@ -27,7 +27,7 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
   // "Sessions" header: title + a filter button whose popover picks how the
   // list is grouped (by project / one flat list) and what each row shows.
   const viewItem = (label, v, ico) =>
-    el("button", { type: "button", "data-view": v, onClick: () => { setView(v); pop.hidden = true; } },
+    el("button", { type: "button", "data-view": v, onClick: () => { setView(v); closePop(); } },
       icon(ico), el("span", { class: "sess-opt", text: label }), icon("check", "sess-check"));
   const modelItem = el("button", { type: "button", onClick: () => {
     showModel = !showModel;
@@ -41,7 +41,10 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
     el("div", { class: "sess-sep" }),
     modelItem);
   pop.hidden = true;
-  const filterBtn = el("button", { class: "sess-filter", type: "button", title: "Group sessions", onClick: () => { pop.hidden = !pop.hidden; } }, icon("filter"));
+  const popBd = backdropFor(pop, () => closePop());
+  function openPop() { pop.hidden = false; popBd.show(); }
+  function closePop() { pop.hidden = true; popBd.hide(); }
+  const filterBtn = el("button", { class: "sess-filter", type: "button", title: "Group sessions", onClick: () => { pop.hidden ? openPop() : closePop(); } }, icon("filter"));
   const refreshBtn = el("button", { class: "sess-filter", type: "button", title: "Refresh", onClick: () => {
     if (refreshBtn.classList.contains("spin")) return; // already reloading
     // Immediate feedback: spin the icon while the page reload kicks in (there's
@@ -53,7 +56,7 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
     location.reload();
   } }, icon("refresh"));
   const sessHead = el("div", { class: "sess-head" }, el("span", { class: "sess-title", text: "Sessions" }), refreshBtn, filterBtn, pop);
-  dismissFirst(() => !pop.hidden, (t) => sessHead.contains(t), () => { pop.hidden = true; });
+  dismissFirst(() => !pop.hidden, (t) => sessHead.contains(t), closePop);
 
   const list = el("nav", { class: "session-list" });
 
@@ -70,7 +73,8 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
   ctx.hidden = true;
   document.body.appendChild(ctx);
   let ctxAt = { x: 0, y: 0 };
-  const closeCtx = () => { ctx.hidden = true; };
+  const ctxBd = backdropFor(ctx, () => closeCtx());
+  const closeCtx = () => { ctx.hidden = true; ctxBd.hide(); };
   function placeCtx() {
     ctx.style.left = Math.max(8, Math.min(ctxAt.x, window.innerWidth - ctx.offsetWidth - 8)) + "px";
     ctx.style.top = Math.max(8, Math.min(ctxAt.y, window.innerHeight - ctx.offsetHeight - 8)) + "px";
@@ -79,6 +83,7 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
     ctxAt = { x, y };
     ctxMenu(s);
     ctx.hidden = false;
+    ctxBd.show();
     placeCtx();
   }
   function ctxMenu(s) {
@@ -229,5 +234,10 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
     return parts[parts.length - 1] || p;
   }
 
-  return { el: root, render };
+  // Native back button: the filter popover and the long-press context menu are
+  // transient layers — report whether one is open and close it (top-most first)
+  // through the real close paths so the backdrop goes away with the menu.
+  const menusOpen = () => !ctx.hidden || !pop.hidden;
+  const closeMenus = () => { if (!ctx.hidden) closeCtx(); else closePop(); };
+  return { el: root, render, menusOpen, closeMenus };
 }

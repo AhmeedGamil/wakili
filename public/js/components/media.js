@@ -37,9 +37,10 @@ let lb = null;
 function ensureLightbox() {
   if (lb) return lb;
   const img = el("img", { class: "lb-img", alt: "" });
-  const dl = el("button", { class: "lb-btn", type: "button", title: "Download" }, icon("download"), el("span", { text: "Download" }));
-  const close = el("button", { class: "lb-btn lb-close", type: "button", title: "Close" }, icon("x"), el("span", { text: "Close" }));
-  const overlay = el("div", { class: "lb-overlay", hidden: "" }, el("div", { class: "lb-bar" }, dl, close), img);
+  // Circular icon buttons: Close on the left, Download on the right.
+  const dl = el("button", { class: "lb-btn", type: "button", title: "Download", "aria-label": "Download" }, icon("download"));
+  const close = el("button", { class: "lb-btn lb-close", type: "button", title: "Close", "aria-label": "Close" }, icon("x"));
+  const overlay = el("div", { class: "lb-overlay", hidden: "" }, el("div", { class: "lb-bar" }, close, dl), img);
   const hide = () => overlay.setAttribute("hidden", "");
   close.addEventListener("click", hide);
   overlay.addEventListener("click", (e) => { if (e.target === overlay) hide(); }); // tap the backdrop to close

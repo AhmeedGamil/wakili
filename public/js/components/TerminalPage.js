@@ -76,8 +76,8 @@ export function createTerminalPage({ onRun }) {
 
   const pathEl = el("span", { class: "term-path", text: "" });
   const head = el("div", { class: "fp-head term-head" },
+    el("button", { class: "head-x", type: "button", title: "Close", "aria-label": "Close", onClick: close }, icon("x")),
     el("div", { class: "term-head-left" }, icon("terminal"), el("strong", { text: "Terminal" })),
-    el("button", { class: "btn ghost fp-x", type: "button", onClick: close }, icon("x")),
   );
   const tabsBar = el("div", { class: "term-tabs" });
   const confirmBox = el("div", { class: "term-confirm" });
