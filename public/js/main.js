@@ -200,6 +200,11 @@ if (IS_NATIVE) {
 // return true; when nothing is open we return false and the shell takes over.
 // Ordered top-most (most transient / highest on screen) first.
 const backLayers = [
+  // Centered confirm dialog (delete chat) — the top-most modal; back cancels
+  // it, same as tapping outside. The dialog is created ad-hoc and removed on
+  // close, so existence is the open check.
+  { isOpen: () => !!document.querySelector(".confirm-overlay"),
+    close: () => document.querySelector(".confirm-overlay")?.remove() },
   // Guided tour: back skips it (same as its Skip button).
   { isOpen: () => !!document.querySelector(".guide-overlay"),
     close: () => document.querySelector(".guide-overlay .btn.ghost")?.click() },
