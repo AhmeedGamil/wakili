@@ -18,5 +18,8 @@ node_modules/
 .codex/
 .agents/
 
+# Local code-review notes - not part of the published repo
+code-review/
+
 # Native Android client - kept locally, not part of the published repo
 wakili-android/
