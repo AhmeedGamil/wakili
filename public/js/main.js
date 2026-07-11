@@ -25,7 +25,7 @@ const THEME_KEY = "ra-theme";
 const ACCENT_KEY = "ra-accent";
 
 // autoAllow is per-session; applySession loads the active session's value.
-const store = createStore({ sessions: [], activeId: null, activeSession: null, agents: [], agentId: "claude", controls: {}, busyIds: {}, queued: {}, unreadIds: {}, autoAllow: false, files: { received: [], uploaded: [] }, allFiles: [], power: { platform: "", keepAwake: false }, autostart: { supported: false, on: false } });
+const store = createStore({ sessions: [], sessionsState: "loading", activeId: null, activeSession: null, agents: [], agentId: "claude", controls: {}, busyIds: {}, queued: {}, unreadIds: {}, autoAllow: false, files: { received: [], uploaded: [] }, allFiles: [], power: { platform: "", keepAwake: false }, autostart: { supported: false, on: false } });
 const emitter = createEmitter();
 const controller = createChatController({ api, store, emitter });
 
@@ -49,6 +49,7 @@ const sidebar = createSidebar({
   onRename: (id, title) => controller.renameSession(id, title),
   onOpenFiles: () => filesPage.open(),
   onAppearance: () => appearanceMenu.open(),
+  onRetrySessions: () => { store.set({ sessionsState: "loading" }); controller.refreshSessions(); },
 });
 const topbar = createTopbar({ onMenu: () => document.body.classList.toggle("nav-open") });
 const picker = createModelPicker({
@@ -301,6 +302,10 @@ emitter.on("historyLoaded", (msgs) => {
   const st = uiState.get(store.get().activeId);
   if (st && st.scrollTop != null) messageList.el.scrollTop = st.scrollTop;
 });
+// First-time session open: spinner while the transcript fetch runs; error card
+// with Retry when it fails with nothing cached. historyLoaded replaces both.
+emitter.on("sessionLoading", () => { dock.clear(); messageList.showLoading(); });
+emitter.on("sessionError", ({ id }) => messageList.showError("Couldn't load this chat — check the connection.", () => controller.openSession(id)));
 emitter.on("turnStart", () => messageList.startAssistant());
 emitter.on("snapshot", (s) => messageList.renderSnapshot(s.parts, s.busy));
 emitter.on("stopped", (info) => messageList.addStopped(info && info.interrupted));
@@ -349,7 +354,7 @@ store.subscribe((s) => {
     uiSid = s.activeId;
     composer.setState(uiState.get(uiSid));
   }
-  sidebar.render({ sessions: s.sessions, activeId: s.activeId, busyIds: s.busyIds, files: s.allFiles, unreadIds: s.unreadIds, agents: s.agents, power: s.power });
+  sidebar.render({ sessions: s.sessions, activeId: s.activeId, busyIds: s.busyIds, files: s.allFiles, unreadIds: s.unreadIds, agents: s.agents, power: s.power, sessionsState: s.sessionsState });
   filesPage.render(s.allFiles);
   composer.setBusy(!!s.busyIds[s.activeId]);   // only the active session's busy gates the composer
   composer.setQueued(s.queued[s.activeId]);    // its pending (queued) message, if any

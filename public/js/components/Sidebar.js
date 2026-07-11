@@ -15,10 +15,10 @@ import { icon } from "./icons.js";
 const VIEW_KEY = "ra-session-view"; // "project" | "all"
 const MODEL_KEY = "ra-session-model"; // "1" = show each session's model in the list
 
-export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDelete, onRename, onOpenFiles, onAppearance }) {
+export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDelete, onRename, onOpenFiles, onAppearance, onRetrySessions }) {
   let view = localStorage.getItem(VIEW_KEY) === "all" ? "all" : "project";
   let showModel = localStorage.getItem(MODEL_KEY) === "1";
-  let last = { sessions: [], activeId: null, busyIds: {}, unreadIds: {}, agents: [] }; // cached for re-render on toggle
+  let last = { sessions: [], activeId: null, busyIds: {}, unreadIds: {}, agents: [], sessionsState: "loading" }; // cached for re-render on toggle
 
   const filesBtn = el("button", { class: "side-files-btn", type: "button", onClick: onOpenFiles },
     el("span", { class: "sf-left" }, icon("file-text"), el("span", { text: "Files" })),
@@ -150,8 +150,8 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
     modelItem.classList.toggle("on", showModel);
   }
 
-  function render({ sessions, activeId, busyIds = {}, files = [], unreadIds = {}, agents = [] }) {
-    last = { sessions: sessions || [], activeId, busyIds, unreadIds, agents: agents || [] };
+  function render({ sessions, activeId, busyIds = {}, files = [], unreadIds = {}, agents = [], sessionsState = "ready" }) {
+    last = { sessions: sessions || [], activeId, busyIds, unreadIds, agents: agents || [], sessionsState };
     filesBtn.querySelector(".side-files-count").textContent = String(files.length);
     renderToggle();
     renderSessions();
@@ -204,8 +204,21 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
   }
 
   function renderSessions() {
-    const { sessions, activeId, busyIds, unreadIds } = last;
+    const { sessions, activeId, busyIds, unreadIds, sessionsState } = last;
     list.innerHTML = "";
+    // Before the first successful list load there are no rows to show — say
+    // what's happening (spinner) or what went wrong (note + retry) instead of
+    // presenting an empty list that reads as "no chats".
+    if (!sessions.length && sessionsState === "loading") {
+      list.appendChild(el("div", { class: "sess-note" }, el("span", { class: "spinner" })));
+      return;
+    }
+    if (!sessions.length && sessionsState === "error") {
+      list.appendChild(el("div", { class: "sess-note" },
+        el("span", { text: "Can't load sessions — check the connection." }),
+        el("button", { class: "btn", type: "button", onClick: () => onRetrySessions && onRetrySessions() }, "Try again")));
+      return;
+    }
     if (view === "all") {
       // Flat, newest-first (server order), each row tagged with its folder.
       for (const s of sessions) list.appendChild(sessionRow(s, activeId, busyIds, unreadIds, s.cwd ? baseName(s.cwd) : "Default project"));

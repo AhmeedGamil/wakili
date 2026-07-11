@@ -191,6 +191,23 @@ export function createMessageList() {
     markLive();
   }
 
+  // Full-pane states for a session with nothing renderable yet: a centered
+  // spinner while its first fetch runs, or an error card with Retry when the
+  // fetch failed and there's no cached copy to fall back on. Both are replaced
+  // by the next renderHistory()/showLoading() — no explicit clearing needed.
+  function showLoading() {
+    root.innerHTML = "";
+    reset();
+    root.appendChild(el("div", { class: "chat-state" }, el("span", { class: "spinner", "aria-label": "Loading" })));
+  }
+  function showError(message, onRetry) {
+    root.innerHTML = "";
+    reset();
+    root.appendChild(el("div", { class: "chat-state" },
+      el("div", { class: "chat-state-msg", text: message || "Couldn't load this chat." }),
+      el("button", { class: "btn", type: "button", onClick: onRetry }, "Retry")));
+  }
+
   // (Re)place the history/live boundary at the current end of the list. Called
   // after renderHistory, and again by main.js once outbox rows are rendered, so
   // in-flight sends sit above the boundary and survive a snapshot replace.
@@ -354,5 +371,5 @@ export function createMessageList() {
     scroll();
   }
 
-  return { el: root, userMessage, addOutbox, renderHistory, renderSnapshot, markLive, startAssistant, feedText, feedThink, addTool, addToolResult, addRecord, endTurn, addStopped, addFile, addExec, setMarkdown };
+  return { el: root, userMessage, addOutbox, renderHistory, showLoading, showError, renderSnapshot, markLive, startAssistant, feedText, feedThink, addTool, addToolResult, addRecord, endTurn, addStopped, addFile, addExec, setMarkdown };
 }

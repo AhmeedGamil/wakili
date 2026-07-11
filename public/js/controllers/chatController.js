@@ -199,9 +199,15 @@ export function createChatController({ api, store, emitter }) {
 
   async function refreshSessions() {
     // Offline is normal here (background poll / best-effort refresh after a turn)
-    // — keep the last known list instead of surfacing an error.
+    // — keep the last known list instead of surfacing an error. Before the FIRST
+    // successful load there's no list to keep, so flag the failure: the sidebar
+    // shows an error state instead of an eternal spinner.
     let sessions;
-    try { sessions = await api.listSessions(); } catch { return; }
+    try { sessions = await api.listSessions(); }
+    catch {
+      if (store.get().sessionsState !== "ready") store.set({ sessionsState: "error" });
+      return;
+    }
     // Reconcile per-session busy from the server's view (keeps background badges
     // fresh). EXCEPT the active session: its busy is driven by its live stream
     // (turn_start/turn_end) and local sends, so a stale poll must not overwrite it
@@ -211,7 +217,7 @@ export function createChatController({ api, store, emitter }) {
     const busyIds = {};
     for (const s of sessions) if (s.busy) busyIds[s.id] = true;
     if (activeId && activeId in prev) busyIds[activeId] = prev[activeId];
-    store.set({ sessions, busyIds });
+    store.set({ sessions, busyIds, sessionsState: "ready" });
     // A queued message for a session that finished in the background goes out now.
     for (const sid of Object.keys(store.get().queued)) if (!busyIds[sid]) flushQueued(sid);
   }
@@ -245,6 +251,10 @@ export function createChatController({ api, store, emitter }) {
     const seq = ++openSeq;
     const cached = sessionCache.get(id);
     if (cached) applySession(id, cached); // optimistic: switch now, reconcile below
+    // First-time open (no cached transcript): the pane would sit empty while the
+    // fetch runs — show a spinner so the wait reads as loading, not as a blank
+    // chat. Retries keep the error card up instead of flashing back to a spinner.
+    else if (attempt === 0) { store.set({ activeId: id }); emitter.emit("sessionLoading", { id }); }
     let s = null, err = null;
     try { s = await api.getSession(id); } catch (e) { err = e; }
     if (seq !== openSeq) return; // the user has already switched elsewhere
@@ -253,6 +263,7 @@ export function createChatController({ api, store, emitter }) {
       if (err && String(err).includes("404")) { sessionCache.delete(id); refreshSessions(); return; }
       if (cached) return; // the cached view stays up; the stream reconnects on its own
       if (attempt === 0) emitter.emit("toast", "Can't connect — retrying…");
+      emitter.emit("sessionError", { id }); // error state in the pane; retries continue behind it
       setTimeout(() => { if (seq === openSeq) openSession(id, attempt + 1); }, 2500);
       return;
     }
@@ -565,7 +576,10 @@ export function createChatController({ api, store, emitter }) {
     try { resume = sessionStorage.getItem("ra-resume-sid"); sessionStorage.removeItem("ra-resume-sid"); } catch { /* private mode */ }
     if (resume && list.some((s) => s.id === resume)) await openSession(resume);
     else if (list.length) await openSession(list[0].id);
-    else await newSession();
+    // An empty list because the load FAILED isn't "no chats yet" — the sidebar
+    // shows its error state with a retry; creating a session would just throw
+    // into the same dead connection.
+    else if (store.get().sessionsState === "ready") await newSession();
     // Light poll as a safety net (authoritative busy/pending counts, titles);
     // the live stream handles moment-to-moment updates.
     setInterval(() => { refreshSessions().catch(() => {}); }, 5000);
@@ -578,5 +592,5 @@ export function createChatController({ api, store, emitter }) {
     }, 6000);
   }
 
-  return { init, openSession, newSession, renameSession, deleteSession, send, execTerm, stopActive, cancelQueued, setControl, setAutoAllow, setAgent, pickModel, answerPermission, answerQuestion, browseFolders, createFolder, setCwd, lockScreen, screenOff, shutdownComputer, setKeepAwake, setAutostart, removeUpload, getOutbox, retryOutbox, discardOutbox };
+  return { init, openSession, newSession, renameSession, deleteSession, refreshSessions, send, execTerm, stopActive, cancelQueued, setControl, setAutoAllow, setAgent, pickModel, answerPermission, answerQuestion, browseFolders, createFolder, setCwd, lockScreen, screenOff, shutdownComputer, setKeepAwake, setAutostart, removeUpload, getOutbox, retryOutbox, discardOutbox };
 }

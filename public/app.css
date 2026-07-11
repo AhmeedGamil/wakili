@@ -295,6 +295,10 @@ body {
 .ft-tabs { display: flex; gap: 6px; padding: 10px 16px 0; }
 .ft-tab { padding: 8px 16px; border: 0; border-radius: 10px 10px 0 0; background: none; color: var(--muted); font-size: 14px; font-weight: 600; cursor: pointer; }
 .ft-tab.on { background: var(--panel-2); color: var(--text); }
+/* Source filter chips (All / By you / By agent) under the Images|Files tabs. */
+.ft-chips { display: flex; gap: 6px; padding: 10px 16px 0; }
+.ft-chip { padding: 5px 13px; border: 1px solid var(--border); border-radius: 999px; background: none; color: var(--muted); font: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; }
+.ft-chip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .ft-body { flex: 1; overflow: auto; padding: 14px 16px 20px; }
 .ft-group { margin-bottom: 18px; }
 .ft-group-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-bottom: 8px; }
@@ -377,6 +381,13 @@ body {
 .ctl { font: inherit; font-size: 13px; background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 5px 7px; }
 
 .messages { flex: 1; overflow-y: auto; padding: 72px 16px 24px; min-height: 0; }
+/* Circular loading indicator (sessions list, first-time session open). */
+.spinner { width: 26px; height: 26px; flex: none; border-radius: 50%; border: 3px solid var(--border); border-top-color: var(--accent); animation: spin-around .7s linear infinite; }
+/* Full-pane state in the chat area: centered spinner or error message + Retry. */
+.chat-state { min-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; color: var(--muted); }
+.chat-state-msg { font-size: 13.5px; text-align: center; max-width: 280px; }
+/* Sidebar session-list states (loading / can't load). */
+.sess-note { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 22px 12px; color: var(--muted); font-size: 12.5px; text-align: center; }
 /* centered greeting on a fresh, empty chat */
 .messages:empty::before {
   content: "What can I help with?";
