@@ -13,6 +13,10 @@ import { icon } from "./icons.js";
 const HISTORY_KEY = "ra-term-history";
 const HISTORY_MAX = 200;
 
+// Running inside the native app shell (its WebView tags the user agent) — the
+// same check main.js makes; old installs still say ZogagApp, keep matching both.
+const IS_NATIVE = /WakiliApp|ZogagApp/i.test(navigator.userAgent);
+
 function loadHistory() {
   try { const a = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]"); return Array.isArray(a) ? a : []; }
   catch { return []; }
@@ -76,9 +80,12 @@ export function createTerminalPage({ onRun }) {
 
   const pathEl = el("span", { class: "term-path", text: "" });
   const head = el("div", { class: "fp-head term-head" },
-    // Back (not ×): leaving the page loses nothing — every terminal keeps its
-    // scrollback — so the affordance matches the native (Kotlin) app's back arrow.
-    el("button", { class: "head-x", type: "button", title: "Back", "aria-label": "Back", onClick: close }, icon("corner-up-left")),
+    // Inside the native app shell the header shows a back arrow (matching the
+    // Kotlin app — leaving loses nothing, terminals keep their scrollback);
+    // desktop/browser keeps the usual ×. Same UA tag main.js uses for IS_NATIVE.
+    IS_NATIVE
+      ? el("button", { class: "head-x", type: "button", title: "Back", "aria-label": "Back", onClick: close }, icon("corner-up-left"))
+      : el("button", { class: "head-x", type: "button", title: "Close", "aria-label": "Close", onClick: close }, icon("x")),
     el("div", { class: "term-head-left" }, icon("terminal"), el("strong", { text: "Terminal" })),
   );
   const tabsBar = el("div", { class: "term-tabs" });
