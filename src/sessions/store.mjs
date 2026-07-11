@@ -12,11 +12,6 @@ import { config } from "../config.mjs";
 fs.mkdirSync(config.dataDir, { recursive: true });
 const fileFor = (id) => path.join(config.dataDir, `${id}.json`);
 
-// Fires after every successful save. The HTTP layer uses it to push cache
-// invalidations to clients without coupling this module to the transport.
-let onSave = null;
-export function onSessionSave(fn) { onSave = fn; }
-
 export const sessionStore = {
   async create({ agentId = "claude", model = config.defaultModel, cwd = null } = {}) {
     const now = Date.now();
@@ -47,7 +42,6 @@ export const sessionStore = {
   async save(session) {
     session.updatedAt = Date.now();
     await fsp.writeFile(fileFor(session.id), JSON.stringify(session, null, 2));
-    if (onSave) { try { onSave(session); } catch { /* observers must not break persistence */ } }
     return session;
   },
 

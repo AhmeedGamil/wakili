@@ -56,16 +56,7 @@ export const api = {
   setAutostart: (on) => call("POST", "/api/autostart", { on }),
   listSessions: () => call("GET", "/api/sessions"),
   createSession: (body) => call("POST", "/api/sessions", body || {}),
-  // opts: { since, after } — conditional/delta fetch. With `since` the server
-  // answers { unchanged: true } when nothing moved; with `after` it sends only
-  // the messages past that index (flagged { delta: true }).
-  getSession: (id, opts) => {
-    const q = new URLSearchParams();
-    if (opts && opts.since != null) q.set("since", opts.since);
-    if (opts && opts.after != null) q.set("after", opts.after);
-    const qs = q.toString();
-    return call("GET", `/api/sessions/${id}${qs ? "?" + qs : ""}`);
-  },
+  getSession: (id) => call("GET", `/api/sessions/${id}`),
   renameSession: (id, title) => call("PATCH", `/api/sessions/${id}`, { title }),
   setCwd: (id, cwd) => call("PATCH", `/api/sessions/${id}`, { cwd }),
   // "Allow always" is stored on the gateway (the server auto-approves), so it
