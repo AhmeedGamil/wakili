@@ -11,6 +11,7 @@ import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
 import { spawn, exec } from "node:child_process";
+import zlib from "node:zlib";
 
 import { config, ROOT } from "./src/config.mjs";
 import { tailscaleUrl, startCloudflare } from "./src/tunnel.mjs";
@@ -20,13 +21,18 @@ import { getAgent, listAgents } from "./src/agents/registry.mjs";
 import { commandsReady, modelsReady, closeWarmClaude } from "./src/agents/claude.mjs";
 import { closeWarmSdk } from "./src/agents/claude-sdk.mjs";
 import { closeWarmCodex } from "./src/agents/codex.mjs";
-import { sessionStore } from "./src/sessions/store.mjs";
+import { sessionStore, onSessionSave } from "./src/sessions/store.mjs";
 import { subscribe, subscribeAll, publish } from "./src/sse.mjs";
 import { createPermission, waitPermission, resolvePermission } from "./src/permissions.mjs";
 import { lockScreen, screenOff, setKeepAwake, powerStatus, shutdownPower, shutdownComputer } from "./src/power.mjs";
 import { autostartStatus, setAutostart, reconcileAutostart, enrollAutostartOnce, refreshAutostart } from "./src/autostart.mjs";
 
 const EDIT_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]); // auto-approved under acceptEdits
+
+// Every session save becomes a push invalidation on the live stream: clients
+// holding an in-memory copy compare updatedAt and refetch (as a delta) only
+// what actually moved — this is what keeps client caches honest without polling.
+onSessionSave((s) => publish(s.id, { type: "_gateway", subtype: "session_updated", updatedAt: s.updatedAt, title: s.title }));
 const busy = new Set(); // session ids with an in-flight turn
 const children = new Map(); // sessionId -> spawned agent child process (for stop/interrupt)
 
@@ -146,8 +152,17 @@ const MIME = {
 };
 
 const json = (res, code, obj) => {
+  const body = JSON.stringify(obj);
+  // Compress sizable JSON (transcripts run to MBs) for clients that take gzip.
+  if (res._gzip && Buffer.byteLength(body) > 1024) {
+    return zlib.gzip(body, (err, buf) => {
+      if (err || !buf) { res.writeHead(code, { "Content-Type": "application/json" }); return res.end(body); }
+      res.writeHead(code, { "Content-Type": "application/json", "Content-Encoding": "gzip" });
+      res.end(buf);
+    });
+  }
   res.writeHead(code, { "Content-Type": "application/json" });
-  res.end(JSON.stringify(obj));
+  res.end(body);
 };
 const notFound = (res) => { res.writeHead(404); res.end("not found"); };
 
@@ -296,6 +311,9 @@ const server = http.createServer(async (req, res) => {
     const p = url.pathname;
     const m = req.method;
     let mm;
+    // Marks whether this client takes gzip; json() and the static handler use
+    // it. Transcripts and app JS shrink ~5-10x, which matters on tunnel links.
+    res._gzip = /\bgzip\b/.test(req.headers["accept-encoding"] || "");
 
     // ---- auth gate ----
     // Everything under /api and /internal needs the token, EXCEPT file downloads:
@@ -377,11 +395,45 @@ const server = http.createServer(async (req, res) => {
       const id = mm[1];
       if (m === "GET") {
         const s = await sessionStore.get(id);
+        if (!s) return notFound(res);
+        // Conditional GET: a client holding a cached copy sends the updatedAt it
+        // has (?since=) — when nothing moved, answer with a tiny stub instead of
+        // the whole transcript.
+        const since = url.searchParams.get("since");
+        if (since !== null && Number(since) === s.updatedAt) {
+          return json(res, 200, { unchanged: true, updatedAt: s.updatedAt, busy: busy.has(id), pending: pendingCards.get(id)?.size || 0 });
+        }
         // Include the in-progress turn's parts so a (re)opening client can paint
         // the streamed-so-far content immediately instead of waiting a resync
         // round trip. The resync snapshot stays authoritative (it's ordered with
         // live events on the stream); the client replaces this copy when it lands.
-        return s ? json(res, 200, { ...withMeta(s), parts: activeTurns.get(id) || [] }) : notFound(res);
+        const parts = activeTurns.get(id) || [];
+        // Windowed GET: ?last=N returns only the newest N messages plus the
+        // total, for clients that virtualize the transcript. Older history
+        // pages in via ?before=<index>&count=N → messages [before-count, before).
+        const lastQ = url.searchParams.get("last");
+        if (lastQ !== null && Number.isInteger(Number(lastQ)) && Number(lastQ) > 0) {
+          const { messages, ...meta } = withMeta(s);
+          const from = Math.max(0, messages.length - Number(lastQ));
+          return json(res, 200, { ...meta, windowed: true, from, total: messages.length, messages: messages.slice(from), parts });
+        }
+        const beforeQ = url.searchParams.get("before");
+        if (beforeQ !== null) {
+          const b = Math.max(0, Math.min(Number(beforeQ) || 0, s.messages.length));
+          const count = Math.max(1, Math.min(Number(url.searchParams.get("count")) || 100, 500));
+          const from = Math.max(0, b - count);
+          return json(res, 200, { page: true, from, total: s.messages.length, messages: s.messages.slice(from, b) });
+        }
+        // Delta GET: ?after=<count> returns only the messages past what the
+        // client already has. Messages are append-only, so the array index is a
+        // valid cursor; anything out of range falls through to the full payload.
+        const after = url.searchParams.get("after");
+        const n = after === null ? NaN : Number(after);
+        if (Number.isInteger(n) && n >= 0 && n <= s.messages.length) {
+          const { messages, ...meta } = withMeta(s);
+          return json(res, 200, { ...meta, delta: true, after: n, messages: messages.slice(n), parts });
+        }
+        return json(res, 200, { ...withMeta(s), parts });
       }
       if (m === "PATCH") {
         const b = await readBody(req);
@@ -748,10 +800,18 @@ const server = http.createServer(async (req, res) => {
         const data = await fsp.readFile(file);
         // No caching for app assets: this is an actively-developed LAN tool, and
         // stale cached CSS/JS after an edit caused real confusion. Always serve fresh.
-        res.writeHead(200, {
-          "Content-Type": MIME[path.extname(file)] || "application/octet-stream",
-          "Cache-Control": "no-store, must-revalidate",
-        });
+        const type = MIME[path.extname(file)] || "application/octet-stream";
+        const headers = { "Content-Type": type, "Cache-Control": "no-store, must-revalidate" };
+        // Text assets compress well and dominate page-load bytes on tunnel links.
+        if (res._gzip && data.length > 1024 && /^(text\/|application\/json|image\/svg)/.test(type)) {
+          const gz = await new Promise((r) => zlib.gzip(data, (e, b) => r(e ? null : b)));
+          if (gz) {
+            headers["Content-Encoding"] = "gzip";
+            res.writeHead(200, headers);
+            return res.end(gz);
+          }
+        }
+        res.writeHead(200, headers);
         return res.end(data);
       } catch { return notFound(res); }
     }

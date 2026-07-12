@@ -82,10 +82,31 @@ export function createChatController({ api, store, emitter }) {
   const bumpPending = (id, d) => store.set((s) => ({ sessions: s.sessions.map((x) => x.id === id ? { ...x, pending: Math.max(0, (x.pending || 0) + d) } : x) }));
   const markUnread = (id) => store.set((s) => ({ unreadIds: { ...s.unreadIds, [id]: true } }));
 
+  // Fetch `id` reconciled against the copy we already hold (RAM only). Sends
+  // since/after so the server can answer { unchanged } (~60 bytes) or a
+  // messages delta instead of the full transcript; the merged result replaces
+  // the cache entry. Returns { unchanged, session } — session is null only
+  // when the server had nothing. The cache never lies: everything it holds is
+  // either fresh from the server or explicitly reconciled against it.
+  async function fetchSession(id) {
+    const cached = sessionCache.get(id);
+    const r = await api.getSession(id, cached ? { since: cached.updatedAt, after: (cached.messages || []).length } : undefined);
+    if (!r) return { session: null };
+    if (r.unchanged) return { unchanged: true, session: cached };
+    let s = r;
+    if (r.delta) {
+      // Merge: the server sent only the messages past our cursor.
+      const { delta, after, messages, ...meta } = r;
+      s = { ...cached, ...meta, messages: [...(cached.messages || []).slice(0, after), ...messages] };
+    }
+    sessionCache.set(id, s);
+    return { session: s };
+  }
+
   // Quietly refetch a background session so switching to it later is instant
   // AND current (the cache would otherwise show a pre-turn transcript first).
   async function refreshCache(id) {
-    try { const s = await api.getSession(id); if (s) sessionCache.set(id, s); } catch { /* next open fetches */ }
+    try { await fetchSession(id); } catch { /* next open fetches */ }
   }
 
   // Ask the server to publish `id`'s live state into the stream; gate content
@@ -133,6 +154,15 @@ export function createChatController({ api, store, emitter }) {
         refreshFiles(); // keep the sidebar files list current
         break;
       case "error": console.warn("[agent]", ev.text); break;
+      // The gateway saved this session (user message persisted, rename from
+      // another device…) — refresh our copy; the delta fetch keeps it cheap.
+      case "sessionUpdated":
+        if (ev.title) store.set((s) => ({
+          sessions: s.sessions.map((x) => x.id === id ? { ...x, title: ev.title, updatedAt: ev.updatedAt } : x),
+          activeSession: s.activeSession ? { ...s.activeSession, title: ev.title } : null,
+        }));
+        refreshCache(id);
+        break;
       case "turnEnd":
         setBusy(id, false);
         if (ev.title) {
@@ -154,6 +184,14 @@ export function createChatController({ api, store, emitter }) {
       case "permission": case "question": bumpPending(id, +1); break;
       case "requestResolved": bumpPending(id, -1); break;
       case "file": refreshFiles(); break;
+      // Push invalidation: refetch only when we hold a stale copy — never
+      // download transcripts for sessions that were never opened.
+      case "sessionUpdated": {
+        if (ev.title) store.set((s) => ({ sessions: s.sessions.map((x) => x.id === id ? { ...x, title: ev.title, updatedAt: ev.updatedAt } : x) }));
+        const c = sessionCache.get(id);
+        if (c && c.updatedAt !== ev.updatedAt) refreshCache(id);
+        break;
+      }
       case "turnEnd":
         setBusy(id, false);
         markUnread(id);      // a turn finished while you were elsewhere
@@ -255,10 +293,10 @@ export function createChatController({ api, store, emitter }) {
     // fetch runs — show a spinner so the wait reads as loading, not as a blank
     // chat. Retries keep the error card up instead of flashing back to a spinner.
     else if (attempt === 0) { store.set({ activeId: id }); emitter.emit("sessionLoading", { id }); }
-    let s = null, err = null;
-    try { s = await api.getSession(id); } catch (e) { err = e; }
+    let r = null, err = null;
+    try { r = await fetchSession(id); } catch (e) { err = e; }
     if (seq !== openSeq) return; // the user has already switched elsewhere
-    if (!s) {
+    if (!r || !r.session) {
       // A 404 means the session is gone (deleted on another device) — don't retry.
       if (err && String(err).includes("404")) { sessionCache.delete(id); refreshSessions(); return; }
       if (cached) return; // the cached view stays up; the stream reconnects on its own
@@ -267,12 +305,10 @@ export function createChatController({ api, store, emitter }) {
       setTimeout(() => { if (seq === openSeq) openSession(id, attempt + 1); }, 2500);
       return;
     }
-    sessionCache.set(id, s);
-    // Skip the re-render (and stream reopen) when the fresh copy matches what the
-    // cache already put on screen — avoids a needless flicker on every switch.
-    const same = cached && cached.updatedAt === s.updatedAt && (cached.messages || []).length === (s.messages || []).length;
-    if (same) store.set({ activeSession: s });
-    else applySession(id, s);
+    // Unchanged on the server means the cached render already on screen is
+    // current — skip the re-render (and stream reopen) to avoid a needless flicker.
+    if (r.unchanged) store.set({ activeSession: r.session });
+    else applySession(id, r.session);
     refreshSessions();
   }
 
@@ -580,9 +616,9 @@ export function createChatController({ api, store, emitter }) {
     // shows its error state with a retry; creating a session would just throw
     // into the same dead connection.
     else if (store.get().sessionsState === "ready") await newSession();
-    // Light poll as a safety net (authoritative busy/pending counts, titles);
-    // the live stream handles moment-to-moment updates.
-    setInterval(() => { refreshSessions().catch(() => {}); }, 5000);
+    // Slow poll as a safety net only (authoritative busy/pending counts after a
+    // missed event); session_updated pushes on the stream do the real-time work.
+    setInterval(() => { refreshSessions().catch(() => {}); }, 60000);
     // Version-skew guard: if the API answers but the live stream never connected,
     // the running gateway predates /api/stream — replies would silently never
     // render. Say so instead of looking broken.

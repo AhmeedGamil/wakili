@@ -24,6 +24,9 @@ export function parseClaudeEvent(ev) {
     if (ev.subtype === "tool_result") return { kind: "toolResult", id: ev.id, output: ev.output, isError: ev.isError };
     if (ev.subtype === "file") return { kind: "file", file: { name: ev.name, caption: ev.caption, url: ev.url } };
     if (ev.subtype === "stderr") return { kind: "error", text: ev.text };
+    // The session was saved on the gateway (new message, title, controls…) —
+    // a cache invalidation: clients refetch only if their copy is older.
+    if (ev.subtype === "session_updated") return { kind: "sessionUpdated", updatedAt: ev.updatedAt, title: ev.title };
     return { kind: "ignore" };
   }
   if (ev.type === "stream_event" && ev.event?.type === "content_block_delta") {
