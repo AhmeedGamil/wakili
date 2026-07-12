@@ -39,8 +39,19 @@ export function createMessageList() {
   root.addEventListener("scroll", () => {
     const distance = root.scrollHeight - root.scrollTop - root.clientHeight;
     stick = distance <= STICK_THRESHOLD;
+    // Virtual window edges: nearing the top pulls older units in (and evicts
+    // far-bottom ones); nearing the bottom pulls evicted newer units back.
+    if (root.scrollTop < EDGE_PX) loadOlder();
+    if (distance < EDGE_PX) loadNewer();
   });
-  const scroll = () => { if (stick) root.scrollTop = root.scrollHeight; };
+  const scroll = () => {
+    if (target !== root) return; // building an off-screen chunk — never scroll
+    if (!stick) return;
+    // Jumping to the bottom while newer history is evicted must land on the
+    // real tail, not the middle of the transcript — restore the tail window.
+    if (uEnd < units.length) renderTail();
+    root.scrollTop = root.scrollHeight;
+  };
   // Note: we deliberately do NOT re-pin to the bottom on pane resize. Tapping the
   // composer opens the mobile keyboard, which shrinks the viewport (interactive-
   // widget=resizes-content); a resize-triggered scroll made the whole chat jump
@@ -70,11 +81,32 @@ export function createMessageList() {
   // idempotent instead of duplicating the streamed content.
   let liveMark = null;
 
+  // ---- transcript virtualization ----
+  // History is flattened into UNITS (a user message, or one assistant part) and
+  // only a bounded window of them exists as DOM. Opening a session renders the
+  // newest WINDOW units; scrolling toward the top materializes older CHUNKs and
+  // evicts far-bottom units once more than MAX are mounted; scrolling back down
+  // re-materializes them and evicts from the top. So the DOM — and every reflow
+  // the phone pays while typing, tapping, or streaming — stays screen-sized no
+  // matter how long the chat grows. The live turn / outbox region below the
+  // `histEnd` marker is never virtualized.
+  const WINDOW = 100;   // units rendered when a session opens
+  const CHUNK = 100;    // units materialized per edge hit
+  const MAX = 300;      // mounted-unit budget before the far edge evicts
+  const EDGE_PX = 500;  // distance from an edge that triggers the next chunk
+  let units = [];       // the open session's full flattened history
+  let uStart = 0, uEnd = 0; // half-open mounted range [uStart, uEnd)
+  let spans = [];       // per mounted unit: the DOM nodes it produced
+  let histEnd = null;   // marker separating history from outbox/live content
+  let target = root;    // where renderers append (a fragment while chunk-building)
+  let capture = null;   // collects a unit's nodes during renderUnit
+
   // Every insertion into the list goes through here so the persistent working
   // pulse stays pinned below whatever just arrived (appendChild MOVES it).
   function append(node) {
-    root.appendChild(node);
-    if (workingEl) root.appendChild(workingEl);
+    target.appendChild(node);
+    if (capture) capture.push(node);
+    if (workingEl && target === root) root.appendChild(workingEl);
   }
 
   function reset() { tw.reset(); removeWorking(); textEl = thinkEl = thinkSummary = thinkLabel = null; awaiting = []; }
@@ -180,29 +212,128 @@ export function createMessageList() {
     }
   }
 
+  // One unit = one user message OR one assistant part — the granularity the
+  // virtual window works in (a single assistant turn can hold dozens of parts).
+  function flatten(messages) {
+    const out = [];
+    for (const m of messages || []) {
+      if (m.role === "user") out.push({ kind: "user", m });
+      else if (m.parts) for (const p of m.parts) out.push({ kind: "part", p });
+      else if (m.text) out.push({ kind: "text", text: m.text });
+    }
+    return out;
+  }
+
+  // Render one unit, capturing the nodes it appends (for later eviction).
+  function renderUnit(u) {
+    const nodes = [];
+    capture = nodes;
+    try {
+      if (u.kind === "user") userMessage({ text: u.m.text, attachments: u.m.attachments || [] });
+      else if (u.kind === "part") renderParts([u.p]);
+      else assistantMessage(u.text);
+    } finally { capture = null; }
+    return nodes;
+  }
+
+  // Build units [from, to) into a fragment with all live side effects muted
+  // (scroll() no-ops off-root; stick is restored — userMessage forces it true,
+  // which must not let an old chunk yank the view to the bottom).
+  function buildChunk(from, to) {
+    const frag = document.createDocumentFragment();
+    const keepStick = stick;
+    target = frag;
+    const chunkSpans = [];
+    try { for (const u of units.slice(from, to)) chunkSpans.push(renderUnit(u)); }
+    finally { target = root; stick = keepStick; }
+    return { frag, chunkSpans };
+  }
+
   function renderHistory(messages) {
     root.innerHTML = "";
     reset();
-    for (const m of messages) {
-      if (m.role === "user") userMessage({ text: m.text, attachments: m.attachments || [] });
-      else if (m.parts) renderParts(m.parts);
-      else if (m.text) assistantMessage(m.text);
-    }
+    units = flatten(messages);
+    uEnd = units.length;
+    uStart = Math.max(0, uEnd - WINDOW);
+    spans = [];
+    for (const u of units.slice(uStart)) spans.push(renderUnit(u));
+    // History/live boundary marker: chunk loads insert before it; outbox rows
+    // and live content append after it (append() targets the root's end).
+    histEnd = document.createComment("hist-end");
+    root.appendChild(histEnd);
     markLive();
+  }
+
+  // Materialize the next older chunk above the window, anchored so the content
+  // being read doesn't move; then evict far-bottom units past the MAX budget
+  // (they're below the viewport — removal there can't shift what's visible).
+  function loadOlder() {
+    if (uStart <= 0 || target !== root || !histEnd) return;
+    const from = Math.max(0, uStart - CHUNK);
+    const { frag, chunkSpans } = buildChunk(from, uStart);
+    const oldH = root.scrollHeight, oldTop = root.scrollTop;
+    root.insertBefore(frag, root.firstChild);
+    root.scrollTop = oldTop + (root.scrollHeight - oldH);
+    spans = chunkSpans.concat(spans);
+    uStart = from;
+    while (uEnd - uStart > MAX && uEnd > uStart + WINDOW) {
+      for (const n of spans.pop()) n.remove();
+      uEnd--;
+    }
+  }
+
+  // Re-materialize evicted newer units below the window; then evict from the
+  // top, compensating scrollTop for the height that disappeared above the view.
+  function loadNewer() {
+    if (uEnd >= units.length || target !== root || !histEnd) return;
+    const to = Math.min(units.length, uEnd + CHUNK);
+    const { frag, chunkSpans } = buildChunk(uEnd, to);
+    root.insertBefore(frag, histEnd); // below the viewport — no scroll shift
+    spans = spans.concat(chunkSpans);
+    uEnd = to;
+    const excess = (uEnd - uStart) - MAX;
+    if (excess > 0) {
+      // Evicting above the viewport shifts all content up — compensate
+      // scrollTop against the first surviving node so the view stays put.
+      const keptSpan = spans[excess];
+      const keptNode = keptSpan && keptSpan.length ? keptSpan[0] : null;
+      const before = keptNode ? keptNode.getBoundingClientRect().top : 0;
+      for (let i = 0; i < excess && spans.length; i++) {
+        for (const n of spans.shift()) n.remove();
+        uStart++;
+      }
+      if (keptNode) root.scrollTop += keptNode.getBoundingClientRect().top - before;
+    }
+  }
+
+  // Snap the window back to the newest units (used when jumping to the bottom
+  // while the tail is evicted — e.g. sending a message from deep in history).
+  function renderTail() {
+    for (const span of spans) for (const n of span) n.remove();
+    uEnd = units.length;
+    uStart = Math.max(0, uEnd - WINDOW);
+    const { frag, chunkSpans } = buildChunk(uStart, uEnd);
+    root.insertBefore(frag, histEnd);
+    spans = chunkSpans;
   }
 
   // Full-pane states for a session with nothing renderable yet: a centered
   // spinner while its first fetch runs, or an error card with Retry when the
   // fetch failed and there's no cached copy to fall back on. Both are replaced
   // by the next renderHistory()/showLoading() — no explicit clearing needed.
+  // Both also drop the virtual-window state: a stray scroll while the pane is
+  // up must not materialize the previous session's units into it.
+  function clearWindowState() { units = []; spans = []; uStart = uEnd = 0; histEnd = null; }
   function showLoading() {
     root.innerHTML = "";
     reset();
+    clearWindowState();
     root.appendChild(el("div", { class: "chat-state" }, el("span", { class: "spinner", "aria-label": "Loading" })));
   }
   function showError(message, onRetry) {
     root.innerHTML = "";
     reset();
+    clearWindowState();
     root.appendChild(el("div", { class: "chat-state" },
       el("div", { class: "chat-state-msg", text: message || "Couldn't load this chat." }),
       el("button", { class: "btn", type: "button", onClick: onRetry }, "Retry")));

@@ -38,16 +38,29 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
   const bar = el("div", { class: "composer-bar" }, addMenu, attachBtn, input, send);
   const root = el("form", { id: "composer", class: "composer" }, menu, queued, chips, bar, fileInput, imgInput);
 
+  // Layout-light autosize: every height write here reflows the whole page (the
+  // composer shares a flex column with the transcript), so only write when the
+  // height actually changed. Reset-to-auto happens only when text got shorter —
+  // the one case the box may need to shrink. Line metrics are measured once.
+  let lastLen = 0, lastH = 0, lineMetrics = null;
   function autoSize() {
-    input.style.height = "auto";
-    input.style.height = Math.min(input.scrollHeight, 180) + "px";
+    const len = input.value.length;
+    const shrunk = len < lastLen;
+    lastLen = len;
+    if (shrunk) input.style.height = "auto";
+    const h = Math.min(input.scrollHeight, 180);
+    if (h === lastH && !shrunk) return; // same line count — zero layout writes
+    lastH = h;
+    input.style.height = h + "px";
     // Buttons sit centered on a single line, but drop to the bottom once the
     // text grows past two lines (so they don't float in the middle of a tall box).
-    const cs = getComputedStyle(input);
-    let line = parseFloat(cs.lineHeight);
-    if (!line) line = parseFloat(cs.fontSize) * 1.4;
-    const padV = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
-    const lines = Math.round((input.scrollHeight - padV) / line);
+    if (!lineMetrics) {
+      const cs = getComputedStyle(input);
+      let line = parseFloat(cs.lineHeight);
+      if (!line) line = parseFloat(cs.fontSize) * 1.4;
+      lineMetrics = { line, padV: parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) };
+    }
+    const lines = Math.round((input.scrollHeight - lineMetrics.padV) / lineMetrics.line);
     bar.classList.toggle("multiline", lines > 1);
   }
 
@@ -55,12 +68,17 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
   const hasContent = () => input.value.trim().length > 0 || pending.length > 0;
   // The button is Stop (■) ONLY while the agent works AND the box is empty;
   // the moment you type (or while idle) it becomes Send (↑) so you can send/queue.
+  let lastStop = null; // rebuild the button's icon only when its state flips —
+                       // this runs per keystroke, and most keystrokes change nothing
   function refreshButton() {
     // While a card is up, force plain Send appearance and disable it entirely.
     const stop = !blocked && busy && !hasContent();
-    send.classList.toggle("stop", stop);
-    send.replaceChildren(icon(stop ? "square" : "arrow-up"));
-    send.setAttribute("aria-label", stop ? "Stop" : "Send");
+    if (stop !== lastStop) {
+      lastStop = stop;
+      send.classList.toggle("stop", stop);
+      send.replaceChildren(icon(stop ? "square" : "arrow-up"));
+      send.setAttribute("aria-label", stop ? "Stop" : "Send");
+    }
     send.disabled = blocked;
     // The + menu is also parked while a card awaits an answer — attaching files
     // or opening the terminal mid-permission would race the pending decision.

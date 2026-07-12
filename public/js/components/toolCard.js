@@ -141,12 +141,14 @@ function outputPre(output, isError) {
 }
 
 // A clickable, collapsible card; click the header to reveal the change/output.
-// `output` (if known up-front, e.g. from history) is appended under the input.
+// `output` (if known up-front, e.g. from history) shows under the input.
+//
+// LAZY BODY: only the header + badge are mounted up front. The body — diff
+// <pre>s and the (possibly huge) output <pre> — is created when the card is
+// expanded and REMOVED again on collapse. A long session holds hundreds of
+// collapsed cards; keeping their bodies out of the DOM is a large chunk of
+// what makes big chats heavy on phones. The data lives on card.__lazy.
 export function toolCard(name, input, { open = false, output = null, isError = false } = {}) {
-  const body = diffBody(name, input);
-  body.classList.add("tool-body");
-  if (output != null) body.appendChild(outputPre(output, isError));
-  if (!open) body.setAttribute("hidden", "");
   const head = el("div", { class: "tool-head" },
     icon("chevron-right", "tool-caret"),
     icon(headIcon(name), "tool-ico"),
@@ -155,25 +157,39 @@ export function toolCard(name, input, { open = false, output = null, isError = f
   // badges are hidden via CSS. data-tool lets attachOutput fill an output-based
   // badge later (Read/Grep/Glob), whose result isn't known at render time.
   const badge = el("div", { class: "tool-badge", text: badgeText(name, input, output) });
-  const card = el("div", { class: "tool-card" + (open ? " open" : "") + (headUsesCommand(name, input) ? " cmd-head" : ""), "data-tool": name }, head, body);
+  const card = el("div", { class: "tool-card" + (open ? " open" : "") + (headUsesCommand(name, input) ? " cmd-head" : ""), "data-tool": name }, head);
+  const lazy = { name, input, output, isError, hasOut: output != null, body: null };
+  card.__lazy = lazy;
+  function mountBody() {
+    const body = diffBody(lazy.name, lazy.input);
+    body.classList.add("tool-body");
+    if (lazy.hasOut) body.appendChild(outputPre(lazy.output, lazy.isError));
+    card.appendChild(body);
+    lazy.body = body;
+  }
+  function unmountBody() { if (lazy.body) { lazy.body.remove(); lazy.body = null; } }
+  if (open) mountBody();
   head.addEventListener("click", () => {
-    const hidden = body.hasAttribute("hidden");
-    if (hidden) body.removeAttribute("hidden"); else body.setAttribute("hidden", "");
-    card.classList.toggle("open", hidden);
+    if (lazy.body) { unmountBody(); card.classList.remove("open"); }
+    else { mountBody(); card.classList.add("open"); }
   });
   // The "what happened" summary sits BELOW the card, outside its border.
   return el("div", { class: "tool-wrap" }, card, badge);
 }
 
-// Append a tool's output to an already-rendered card (the live path). The card
+// Attach a tool's output to an already-rendered card (the live path). The card
 // keeps whatever collapsed/expanded state it has — it does NOT auto-open, so
-// cards stay collapsed until the user chooses to open them. No-op if the node
-// isn't a tool card or already has output.
+// cards stay collapsed until the user chooses to open them. With the lazy body,
+// the output is stored on the card and only becomes DOM if/while it's expanded.
+// No-op if the node isn't a tool card or already has output.
 export function attachOutput(cardEl, output, isError) {
   if (!cardEl || !cardEl.classList || !cardEl.classList.contains("tool-card")) return false;
-  const body = cardEl.querySelector(".tool-body");
-  if (!body || body.querySelector(".diff-out")) return false;
-  body.appendChild(outputPre(output, isError));
+  const lazy = cardEl.__lazy;
+  if (!lazy || lazy.hasOut) return false;
+  lazy.output = output;
+  lazy.isError = isError;
+  lazy.hasOut = true;
+  if (lazy.body && !lazy.body.querySelector(".diff-out")) lazy.body.appendChild(outputPre(output, isError));
   // Fill the header badge from the output when it wasn't known from the input
   // (Read/Grep/Glob). Edit/Write already set theirs, so leave a filled badge be.
   // The badge now lives outside the card (as a sibling in .tool-wrap).
