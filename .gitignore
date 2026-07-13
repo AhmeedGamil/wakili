@@ -24,6 +24,3 @@ SECURITY_REVIEW.md
 
 # Native Android client - kept locally, not part of the published repo
 wakili-android/
-
-# Experimental agent adapter - kept locally, not part of the published repo
-src/agents/antigravity.mjs
