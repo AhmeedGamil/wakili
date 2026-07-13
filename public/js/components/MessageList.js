@@ -39,10 +39,11 @@ export function createMessageList() {
   root.addEventListener("scroll", () => {
     const distance = root.scrollHeight - root.scrollTop - root.clientHeight;
     stick = distance <= STICK_THRESHOLD;
-    // Virtual window edges: nearing the top pulls older units in (and evicts
-    // far-bottom ones); nearing the bottom pulls evicted newer units back.
-    if (root.scrollTop < EDGE_PX) loadOlder();
-    if (distance < EDGE_PX) loadNewer();
+    // Virtual window edges: nearing (or coasting into) the top spacer pulls
+    // older units in; nearing the bottom spacer pulls evicted newer ones back.
+    // Spacer math keeps total geometry constant, so a fling is never touched.
+    if (uStart > 0 && root.scrollTop < topH + EDGE_PX) loadOlder();
+    if (uEnd < units.length && distance < bottomH + EDGE_PX) loadNewer();
   });
   const scroll = () => {
     if (target !== root) return; // building an off-screen chunk — never scroll
@@ -93,13 +94,40 @@ export function createMessageList() {
   const WINDOW = 100;   // units rendered when a session opens
   const CHUNK = 100;    // units materialized per edge hit
   const MAX = 300;      // mounted-unit budget before the far edge evicts
-  const EDGE_PX = 500;  // distance from an edge that triggers the next chunk
+  const EDGE_PX = 500;  // distance from a spacer that triggers the next chunk
   let units = [];       // the open session's full flattened history
   let uStart = 0, uEnd = 0; // half-open mounted range [uStart, uEnd)
   let spans = [];       // per mounted unit: the DOM nodes it produced
   let histEnd = null;   // marker separating history from outbox/live content
   let target = root;    // where renderers append (a fragment while chunk-building)
   let capture = null;   // collects a unit's nodes during renderUnit
+  // Spacer-based geometry: invisible blocks stand in for unmounted units, so
+  // mounting/evicting a chunk swaps real height for spacer height 1:1 and the
+  // total scrollHeight NEVER changes mid-gesture. No scrollTop writes → a
+  // fling is never cancelled, and outrunning the loader coasts into blank
+  // spacer instead of dying at a false top edge. Spacer sizes start as
+  // avgH-estimates and self-correct as chunks get measured on mount/evict.
+  let topSpacer = null, bottomSpacer = null;
+  let topH = 0, bottomH = 0; // current spacer heights (px)
+  let avgH = 80;             // running average measured unit height
+  let measured = 0;          // units that have contributed to avgH
+
+  function setSpacers(t, b) {
+    topH = uStart <= 0 ? 0 : Math.max(0, t);
+    bottomH = uEnd >= units.length ? 0 : Math.max(0, b);
+    if (topSpacer) topSpacer.style.height = topH + "px";
+    if (bottomSpacer) bottomSpacer.style.height = bottomH + "px";
+  }
+  // First real DOM node in spans[i..] — boundary for height measurements.
+  function firstNodeFrom(i) {
+    for (let k = i; k < spans.length; k++) if (spans[k].length) return spans[k][0];
+    return bottomSpacer;
+  }
+  function foldAvg(chunkH, count) {
+    if (count <= 0 || chunkH <= 0) return;
+    avgH = (avgH * measured + chunkH) / (measured + count);
+    measured += count;
+  }
 
   // Every insertion into the list goes through here so the persistent working
   // pulse stays pinned below whatever just arrived (appendChild MOVES it).
@@ -256,53 +284,77 @@ export function createMessageList() {
     uEnd = units.length;
     uStart = Math.max(0, uEnd - WINDOW);
     spans = [];
+    topSpacer = el("div", { class: "vspace" });
+    root.appendChild(topSpacer);
     for (const u of units.slice(uStart)) spans.push(renderUnit(u));
+    bottomSpacer = el("div", { class: "vspace" });
+    root.appendChild(bottomSpacer);
     // History/live boundary marker: chunk loads insert before it; outbox rows
     // and live content append after it (append() targets the root's end).
     histEnd = document.createComment("hist-end");
     root.appendChild(histEnd);
+    // Seed the average unit height from what just mounted, then size the top
+    // spacer to stand in for everything older.
+    if (spans.length) {
+      const h = bottomSpacer.getBoundingClientRect().top - topSpacer.getBoundingClientRect().bottom;
+      if (h > 0) { avgH = h / spans.length; measured = spans.length; }
+    }
+    setSpacers(uStart * avgH, 0);
+    scroll(); // the spacer grew scrollHeight — re-pin the stick-to-bottom view
     markLive();
   }
 
-  // Materialize the next older chunk above the window, anchored so the content
-  // being read doesn't move; then evict far-bottom units past the MAX budget
-  // (they're below the viewport — removal there can't shift what's visible).
+  // Materialize the next older chunk between the top spacer and the window,
+  // then shrink the spacer by the chunk's ACTUAL height — total geometry is
+  // unchanged, scrollTop is never written, an active fling is never touched.
+  // Far-bottom units past the MAX budget are folded into the bottom spacer
+  // the same way (measured height out, spacer height in — net zero).
   function loadOlder() {
-    if (uStart <= 0 || target !== root || !histEnd) return;
+    if (uStart <= 0 || target !== root || !topSpacer) return;
     const from = Math.max(0, uStart - CHUNK);
     const { frag, chunkSpans } = buildChunk(from, uStart);
-    const oldH = root.scrollHeight, oldTop = root.scrollTop;
-    root.insertBefore(frag, root.firstChild);
-    root.scrollTop = oldTop + (root.scrollHeight - oldH);
+    const prevFirst = firstNodeFrom(0);
+    root.insertBefore(frag, prevFirst);
+    const chunkH = prevFirst.getBoundingClientRect().top - topSpacer.getBoundingClientRect().bottom;
+    foldAvg(chunkH, uStart - from);
     spans = chunkSpans.concat(spans);
     uStart = from;
-    while (uEnd - uStart > MAX && uEnd > uStart + WINDOW) {
-      for (const n of spans.pop()) n.remove();
-      uEnd--;
+    setSpacers(topH - chunkH, bottomH);
+    const excess = (uEnd - uStart) - MAX;
+    if (excess > 0) {
+      const firstEvicted = firstNodeFrom(spans.length - excess);
+      const h = firstEvicted === bottomSpacer ? 0 : bottomSpacer.getBoundingClientRect().top - firstEvicted.getBoundingClientRect().top;
+      for (let i = 0; i < excess && spans.length; i++) {
+        for (const n of spans.pop()) n.remove();
+        uEnd--;
+      }
+      setSpacers(topH, bottomH + h);
     }
   }
 
-  // Re-materialize evicted newer units below the window; then evict from the
-  // top, compensating scrollTop for the height that disappeared above the view.
+  // Re-materialize evicted newer units above the bottom spacer (shrinking it
+  // by their measured height), then fold excess top units into the top spacer
+  // — both sides net zero geometry, so no scrollTop compensation ever.
   function loadNewer() {
-    if (uEnd >= units.length || target !== root || !histEnd) return;
+    if (uEnd >= units.length || target !== root || !bottomSpacer) return;
     const to = Math.min(units.length, uEnd + CHUNK);
     const { frag, chunkSpans } = buildChunk(uEnd, to);
-    root.insertBefore(frag, histEnd); // below the viewport — no scroll shift
+    const firstNew = (() => { for (const s of chunkSpans) if (s.length) return s[0]; return null; })();
+    root.insertBefore(frag, bottomSpacer);
+    const chunkH = firstNew ? bottomSpacer.getBoundingClientRect().top - firstNew.getBoundingClientRect().top : 0;
+    foldAvg(chunkH, to - uEnd);
     spans = spans.concat(chunkSpans);
     uEnd = to;
+    setSpacers(topH, bottomH - chunkH);
     const excess = (uEnd - uStart) - MAX;
     if (excess > 0) {
-      // Evicting above the viewport shifts all content up — compensate
-      // scrollTop against the first surviving node so the view stays put.
-      const keptSpan = spans[excess];
-      const keptNode = keptSpan && keptSpan.length ? keptSpan[0] : null;
-      const before = keptNode ? keptNode.getBoundingClientRect().top : 0;
+      const survivor = firstNodeFrom(excess);
+      const h = survivor.getBoundingClientRect().top - topSpacer.getBoundingClientRect().bottom;
       for (let i = 0; i < excess && spans.length; i++) {
         for (const n of spans.shift()) n.remove();
         uStart++;
       }
-      if (keptNode) root.scrollTop += keptNode.getBoundingClientRect().top - before;
+      setSpacers(topH + h, bottomH);
     }
   }
 
@@ -313,8 +365,53 @@ export function createMessageList() {
     uEnd = units.length;
     uStart = Math.max(0, uEnd - WINDOW);
     const { frag, chunkSpans } = buildChunk(uStart, uEnd);
-    root.insertBefore(frag, histEnd);
+    root.insertBefore(frag, bottomSpacer);
     spans = chunkSpans;
+    setSpacers(uStart * avgH, 0);
+  }
+
+  // ---- anchor-based position save/restore (session switching) ----
+  // The saved position is CONTENT IDENTITY — the first visible unit's index
+  // and its exact pixel offset from the viewport top — never a raw scrollTop.
+  // A pixel value would have to be mapped through the spacers' height
+  // estimates (approximate, and meaningless after a re-wrap); the anchor is
+  // exact by construction. Units flatten deterministically from append-only
+  // messages, so an old unit's index never shifts between visits.
+  function getAnchor() {
+    if (stick || !spans.length) return { bottom: true }; // was at the latest — return there
+    const rootTop = root.getBoundingClientRect().top;
+    for (let i = 0; i < spans.length; i++) {
+      const node = spans[i][0];
+      if (!node) continue;
+      const r = node.getBoundingClientRect();
+      if (r.bottom > rootTop) return { index: uStart + i, offset: r.top - rootTop };
+    }
+    return { bottom: true };
+  }
+
+  function restoreAnchor(a) {
+    if (!a || a.bottom || !topSpacer || !units.length) {
+      stick = true;
+      root.scrollTop = root.scrollHeight;
+      return;
+    }
+    const idx = Math.max(0, Math.min(units.length - 1, a.index));
+    // Teleport the mounted window around the anchor unit if it isn't mounted.
+    if (idx < uStart || idx >= uEnd) {
+      for (const span of spans) for (const n of span) n.remove();
+      uStart = Math.max(0, idx - Math.floor(WINDOW / 2));
+      uEnd = Math.min(units.length, uStart + WINDOW);
+      const { frag, chunkSpans } = buildChunk(uStart, uEnd);
+      root.insertBefore(frag, bottomSpacer);
+      spans = chunkSpans;
+      setSpacers(uStart * avgH, (units.length - uEnd) * avgH);
+    }
+    // One scroll write at a safe moment (no gesture can be mid-flight during a
+    // session switch): put the anchor node exactly back at its saved offset.
+    const node = firstNodeFrom(idx - uStart);
+    if (node === bottomSpacer) { root.scrollTop = root.scrollHeight; return; }
+    const rootTop = root.getBoundingClientRect().top;
+    root.scrollTop += (node.getBoundingClientRect().top - rootTop) - (a.offset || 0);
   }
 
   // Full-pane states for a session with nothing renderable yet: a centered
@@ -323,7 +420,7 @@ export function createMessageList() {
   // by the next renderHistory()/showLoading() — no explicit clearing needed.
   // Both also drop the virtual-window state: a stray scroll while the pane is
   // up must not materialize the previous session's units into it.
-  function clearWindowState() { units = []; spans = []; uStart = uEnd = 0; histEnd = null; }
+  function clearWindowState() { units = []; spans = []; uStart = uEnd = 0; histEnd = null; topSpacer = bottomSpacer = null; topH = bottomH = 0; }
   function showLoading() {
     root.innerHTML = "";
     reset();
@@ -502,5 +599,5 @@ export function createMessageList() {
     scroll();
   }
 
-  return { el: root, userMessage, addOutbox, renderHistory, showLoading, showError, renderSnapshot, markLive, startAssistant, feedText, feedThink, addTool, addToolResult, addRecord, endTurn, addStopped, addFile, addExec, setMarkdown };
+  return { el: root, userMessage, addOutbox, renderHistory, getAnchor, restoreAnchor, showLoading, showError, renderSnapshot, markLive, startAssistant, feedText, feedThink, addTool, addToolResult, addRecord, endTurn, addStopped, addFile, addExec, setMarkdown };
 }

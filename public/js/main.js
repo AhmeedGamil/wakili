@@ -298,9 +298,9 @@ emitter.on("historyLoaded", (msgs) => {
   // Outbox rows belong above the live-turn boundary: a snapshot REPLACES
   // everything below the boundary, and an unsent message must survive that.
   messageList.markLive();
-  // Restore where you were scrolled to (falls back to the bottom).
+  // Restore where you were reading (falls back to the bottom).
   const st = uiState.get(store.get().activeId);
-  if (st && st.scrollTop != null) messageList.el.scrollTop = st.scrollTop;
+  if (st && st.anchor) messageList.restoreAnchor(st.anchor);
 });
 // First-time session open: spinner while the transcript fetch runs; error card
 // with Retry when it fails with nothing cached. historyLoaded replaces both.
@@ -350,7 +350,9 @@ store.subscribe((s) => {
   // (this fires before the new session's history renders), then restore the
   // incoming session's draft and attachments.
   if (s.activeId !== uiSid) {
-    if (uiSid) uiState.set(uiSid, { ...composer.getState(), scrollTop: messageList.el.scrollTop });
+    // Reading position is saved as a content anchor (first visible unit +
+    // offset), not a raw scrollTop — exact under virtualization and re-wraps.
+    if (uiSid) uiState.set(uiSid, { ...composer.getState(), anchor: messageList.getAnchor() });
     uiSid = s.activeId;
     composer.setState(uiState.get(uiSid));
   }

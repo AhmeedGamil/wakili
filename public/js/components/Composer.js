@@ -38,12 +38,30 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
   const bar = el("div", { class: "composer-bar" }, addMenu, attachBtn, input, send);
   const root = el("form", { id: "composer", class: "composer" }, menu, queued, chips, bar, fileInput, imgInput);
 
-  // Layout-light autosize: every height write here reflows the whole page (the
-  // composer shares a flex column with the transcript), so only write when the
-  // height actually changed. Reset-to-auto happens only when text got shorter —
-  // the one case the box may need to shrink. Line metrics are measured once.
+  // Where the engine supports it, CSS `field-sizing: content` (in app.css)
+  // auto-grows the textarea natively — ZERO JS measurement on the typing path.
+  // The multiline class is then driven by a ResizeObserver, which fires after
+  // layout only when the box's size actually changed (no forced reflow).
+  const FIELD_SIZING = typeof CSS !== "undefined" && !!CSS.supports && CSS.supports("field-sizing", "content");
+  if (FIELD_SIZING) {
+    let line = 0;
+    new ResizeObserver((entries) => {
+      const h = entries[entries.length - 1].contentRect.height;
+      if (!line) {
+        const cs = getComputedStyle(input);
+        line = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.4;
+      }
+      bar.classList.toggle("multiline", Math.round(h / line) > 1);
+    }).observe(input);
+  }
+
+  // Fallback autosize (no field-sizing): every height write here reflows the
+  // whole page (the composer shares a flex column with the transcript), so only
+  // write when the height actually changed. Reset-to-auto happens only when
+  // text got shorter — the one case the box may need to shrink.
   let lastLen = 0, lastH = 0, lineMetrics = null;
   function autoSize() {
+    if (FIELD_SIZING) return; // the browser owns sizing; the observer owns the class
     const len = input.value.length;
     const shrunk = len < lastLen;
     lastLen = len;
@@ -184,7 +202,13 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
     input.value = "";
     autoSize();
     refreshButton(); // box is empty again → back to Stop if still busy
-    input.blur();    // drop the mobile keyboard once the message is on its way
+    // Drop the mobile keyboard — but only AFTER the optimistic message has
+    // painted (double rAF: the second callback runs after the first frame is
+    // on screen). Blurring synchronously dismissed the keyboard in the same
+    // beat as the send work; in the native shell that dismissal resizes the
+    // WebView (KeyboardAvoidingView), stacking a full-page relayout onto the
+    // tap — the "Send lags in big sessions" hitch.
+    requestAnimationFrame(() => requestAnimationFrame(() => input.blur()));
   }
 
   // ---- + (add) menu: attach Images / Files, or open the Terminal page ----
