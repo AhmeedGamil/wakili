@@ -20,6 +20,7 @@ node_modules/
 
 # Local code-review notes - not part of the published repo
 code-review/
+SECURITY_REVIEW.md
 
 # Native Android client - kept locally, not part of the published repo
 wakili-android/
