@@ -5,17 +5,21 @@
 //   - opened on demand (Settings → Connection → Add or change the host),
 //     overlaying the live session.
 // The saved hosts live in a DROPDOWN labeled "Current host": collapsed it's a
-// single row (the selection); expanded, the options render in an absolutely
-// positioned box that FLOATS OVER the buttons below — opening it never shifts
-// Connect / Scan QR, no matter how many hosts are saved. Connect acts on the
-// selection — retrying the current host and switching to another are the same
-// gesture. Each option has a two-tap Remove (so a token isn't lost by a slip).
+// single row (the selection); expanded, the options render in a transparent
+// MODAL anchored under that row, floating over the buttons below — opening it
+// never shifts Connect / Scan QR, no matter how many hosts are saved. A Modal
+// (not an absolutely-positioned box) because Android never delivers touches to
+// children outside their parent's bounds: the old floating box could neither
+// scroll nor reliably tap past the first rows. Connect acts on the selection —
+// retrying the current host and switching to another are the same gesture.
+// Each option has a two-tap Remove (so a token isn't lost by a slip).
 // Names are derived (hostname-lan / hostname-tailscale, see networks.js).
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   Image,
   KeyboardAvoidingView,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -31,8 +35,23 @@ export function ConnectScreen({ networks, activeId, error, showBack, onPick, onS
   const [selectedId, setSelectedId] = useState(activeId); // Connect acts on this
   const [open, setOpen] = useState(false);                // dropdown expanded?
   const [armedId, setArmedId] = useState(null);           // remove needs a second tap
+  const selectRef = useRef(null);                         // the closed row, measured to anchor the menu
+  const [anchor, setAnchor] = useState(null);             // { top, left, width } in window coords
 
   const selected = networks.find((n) => n.id === selectedId) || networks[0] || null;
+
+  const closeMenu = () => { setOpen(false); setArmedId(null); };
+  const toggleMenu = () => {
+    if (open) return closeMenu();
+    setArmedId(null);
+    // Anchor the modal menu just under the select row. measureInWindow gives
+    // window coordinates — statusBarTranslucent on the Modal makes its
+    // coordinate space match on Android.
+    selectRef.current?.measureInWindow((x, y, width, height) => {
+      setAnchor({ top: y + height, left: x, width });
+      setOpen(true);
+    });
+  };
 
   return (
     <View style={styles.fill}>
@@ -66,8 +85,9 @@ export function ConnectScreen({ networks, activeId, error, showBack, onPick, onS
 
               {/* Closed state: one row showing the selection */}
               <Pressable
+                ref={selectRef}
                 style={[styles.select, open && styles.selectOpen]}
-                onPress={() => { setOpen(!open); setArmedId(null); }}
+                onPress={toggleMenu}
               >
                 <View style={styles.netMain}>
                   <Text style={styles.netName} numberOfLines={1}>{selected.name}</Text>
@@ -76,34 +96,39 @@ export function ConnectScreen({ networks, activeId, error, showBack, onPick, onS
                 <Text style={styles.chevron}>{open ? "▲" : "▼"}</Text>
               </Pressable>
 
-              {/* Open state: the options, in a bounded scrollable box */}
-              {open ? (
-                <View style={styles.menu}>
-                  <ScrollView style={styles.menuScroll} nestedScrollEnabled keyboardShouldPersistTaps="handled">
-                    {networks.map((n) => (
-                      <Pressable
-                        key={n.id}
-                        style={[styles.option, n.id === selected.id && styles.optionSelected]}
-                        onPress={() => { setSelectedId(n.id); setOpen(false); setArmedId(null); }}
-                      >
-                        <View style={styles.netMain}>
-                          <Text style={styles.netName} numberOfLines={1}>{n.name}</Text>
-                          <Text style={styles.netHost} numberOfLines={1}>{hostOf(n.url)}</Text>
-                        </View>
-                        {n.id === activeId ? <Text style={styles.current}>current</Text> : null}
+              {/* Open state: the options in a modal-hosted, bounded scrollable
+                  box anchored under the row. The modal owns the whole screen,
+                  so every row taps and scrolls; the backdrop closes it. */}
+              {open && anchor ? (
+                <Modal transparent statusBarTranslucent visible onRequestClose={closeMenu}>
+                  <Pressable style={styles.menuBackdrop} onPress={closeMenu} />
+                  <View style={[styles.menu, { top: anchor.top, left: anchor.left, width: anchor.width }]}>
+                    <ScrollView style={styles.menuScroll} keyboardShouldPersistTaps="handled">
+                      {networks.map((n) => (
                         <Pressable
-                          hitSlop={10}
-                          onPress={() => {
-                            if (armedId === n.id) { setArmedId(null); if (onRemove) onRemove(n.id); }
-                            else setArmedId(n.id);
-                          }}
+                          key={n.id}
+                          style={[styles.option, n.id === selected.id && styles.optionSelected]}
+                          onPress={() => { setSelectedId(n.id); closeMenu(); }}
                         >
-                          <Text style={styles.remove}>{armedId === n.id ? "Sure?" : "✕"}</Text>
+                          <View style={styles.netMain}>
+                            <Text style={styles.netName} numberOfLines={1}>{n.name}</Text>
+                            <Text style={styles.netHost} numberOfLines={1}>{hostOf(n.url)}</Text>
+                          </View>
+                          {n.id === activeId ? <Text style={styles.current}>current</Text> : null}
+                          <Pressable
+                            hitSlop={10}
+                            onPress={() => {
+                              if (armedId === n.id) { setArmedId(null); if (onRemove) onRemove(n.id); }
+                              else setArmedId(n.id);
+                            }}
+                          >
+                            <Text style={styles.remove}>{armedId === n.id ? "Sure?" : "✕"}</Text>
+                          </Pressable>
                         </Pressable>
-                      </Pressable>
-                    ))}
-                  </ScrollView>
-                </View>
+                      ))}
+                    </ScrollView>
+                  </View>
+                </Modal>
               ) : null}
             </View>
           ) : null}
@@ -173,14 +198,12 @@ const styles = StyleSheet.create({
   },
   selectOpen: { borderColor: colors.accent, borderBottomLeftRadius: 0, borderBottomRightRadius: 0 },
   chevron: { color: colors.muted, fontSize: 12, marginLeft: 10 },
+  // Any tap outside the menu dismisses it (and does nothing else).
+  menuBackdrop: { ...StyleSheet.absoluteFillObject },
   menu: {
-    // Floats below the select row, over whatever follows — no layout shift.
+    // Positioned inside the modal at the measured anchor (under the select
+    // row), floating over whatever follows — no layout shift.
     position: "absolute",
-    top: "100%",
-    left: 0,
-    right: 0,
-    zIndex: 30,
-    elevation: 8, // Android: draw above siblings (zIndex alone isn't enough with a WebView around)
     backgroundColor: colors.card,
     borderWidth: 1,
     borderTopWidth: 0,

@@ -181,6 +181,7 @@ const ENROLL_MARKER = path.join(config.runtimeDir, "autostart-enrolled");
 
 export async function enrollAutostartOnce() {
   try {
+    if (process.env.WAKILI_NO_AUTOSTART === "1") return; // test/container instances must not touch login startup
     if (fs.existsSync(ENROLL_MARKER)) return;
     if (/[\\/]_npx[\\/]/.test(ROOT)) return;
     const cur = await autostartStatus();
@@ -203,6 +204,7 @@ export async function enrollAutostartOnce() {
 // Rewriting is idempotent and only ever flips paths to the copy actually running.
 export async function refreshAutostart() {
   try {
+    if (process.env.WAKILI_NO_AUTOSTART === "1") return; // test/container instances must not touch login startup
     if (/[\\/]_npx[\\/]/.test(ROOT)) return; // ephemeral install — never register its paths
     const cur = await autostartStatus();
     if (cur.supported && cur.on) await setAutostart(true);
@@ -262,6 +264,7 @@ async function removeLegacy() {
 // folder about to be removed. Returns false only if establishing the new entry
 // failed (then the caller keeps the old folder so login startup isn't broken).
 export async function reconcileAutostart() {
+  if (process.env.WAKILI_NO_AUTOSTART === "1") return true; // test/container instances must not touch login startup
   try {
     const legacy = await legacyState();
     if (!legacy.present) return true; // nothing old to migrate

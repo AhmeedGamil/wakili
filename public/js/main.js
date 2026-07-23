@@ -3,6 +3,8 @@
 // state changes -> components. No business logic lives here.
 
 import { api } from "./services/api.js";
+import { KEYS, getPref, setPref } from "./core/prefs.js";
+import { IS_NATIVE } from "./core/env.js";
 import { createStore } from "./core/store.js";
 import { createEmitter } from "./core/emitter.js";
 import { createChatController } from "./controllers/chatController.js";
@@ -17,12 +19,12 @@ import { createEndpointMenu } from "./components/EndpointMenu.js";
 import { createDeviceMenu } from "./components/DeviceMenu.js";
 import { createAppearanceMenu } from "./components/AppearanceMenu.js";
 import { createMessageList } from "./components/MessageList.js";
+import { mediaMenuLayer } from "./components/media.js";
 import { createDock } from "./components/Dock.js";
 import { createComposer } from "./components/Composer.js";
-import { maybeShowGuide, showGuide } from "./components/Guide.js";
-
-const THEME_KEY = "ra-theme";
-const ACCENT_KEY = "ra-accent";
+import { initDrawerSwipe } from "./components/drawerSwipe.js";
+import { showGuide } from "./components/Guide.js";
+import { createGuideSteps } from "./components/guideSteps.js";
 
 // autoAllow is per-session; applySession loads the active session's value.
 const store = createStore({ sessions: [], sessionsState: "loading", activeId: null, activeSession: null, agents: [], agentId: "claude", controls: {}, busyIds: {}, queued: {}, unreadIds: {}, autoAllow: false, files: { received: [], uploaded: [] }, allFiles: [], power: { platform: "", keepAwake: false }, autostart: { supported: false, on: false } });
@@ -63,7 +65,25 @@ const folderPicker = createFolderPicker({
   onBrowse: (path) => controller.browseFolders(path),
   onCreate: (parent, name) => controller.createFolder(parent, name),
 });
-const filesPage = createFilesPage(); // full-screen Files view, opened from the sidebar
+// Full-screen Files view, opened from the sidebar. Long-press → Delete removes
+// the file from the gateway's registry, then the list refreshes from source.
+const filesPage = createFilesPage({
+  onDelete: async (f) => {
+    try { await api.deleteFile(f.token); }
+    catch (e) {
+      // A 404 here isn't "file already gone" — it's a gateway from before the
+      // delete endpoint existed answering "no such route". Say that.
+      const old = String(e && e.message || e).includes("404");
+      return emitter.emit("toast", old ? "The wakili server needs a restart to enable deleting" : "Couldn't delete — check the connection");
+    }
+    emitter.emit("toast", `Deleted "${f.name}"`);
+    // Drop the row NOW — waiting for the refetch left the spinner up for
+    // seconds on slow links even though the delete was already done. The
+    // background refresh keeps the list authoritative.
+    store.set((s) => ({ allFiles: (s.allFiles || []).filter((x) => x.token !== f.token) }));
+    api.files().then((all) => store.set({ allFiles: all })).catch(() => { /* next refresh catches up */ });
+  },
+});
 const terminalPage = createTerminalPage({ // full-screen shell, opened from the composer's + menu
   onRun: (command, cwd) => controller.execTerm(command, cwd),
 });
@@ -80,9 +100,9 @@ const deviceMenu = createDeviceMenu({ // lock screen / turn off screen / keep aw
 const appearanceMenu = createAppearanceMenu({ // connection/device rows + formatting + theme + accent
   getTheme: () => document.body.dataset.theme,
   onSetTheme: (t) => applyTheme(t),
-  getAccent: () => localStorage.getItem(ACCENT_KEY) || "#3b82f6",
+  getAccent: () => getPref(KEYS.accent) || "#3b82f6",
   onSetAccent: (hex) => applyAccent(hex),
-  getFormat: () => localStorage.getItem("ra-markdown") !== "0",
+  getFormat: () => getPref(KEYS.markdown, "1") !== "0",
   onToggleFormat: (on) => messageList.setMarkdown(on),
   renderConnections: (c) => endpointMenu.render(c),
   renderDevice: (c) => deviceMenu.render(c),
@@ -90,68 +110,8 @@ const appearanceMenu = createAppearanceMenu({ // connection/device rows + format
 });
 
 // ---- guided tour ----
-// Steps navigate the real UI: the settings panel opens, tabs switch, and each
-// device row is spotlit and explained on its own.
-const devRow = (n) => () => appearanceMenu.panel.querySelectorAll(".dev-row")[n];
-function guideSteps() {
-  return [
-    {
-      before: () => appearanceMenu.close(),
-      target: () => sidebar.el.querySelectorAll(".side-files-btn")[0],
-      title: "Select a project",
-      body: "Every chat runs inside a project folder on your computer. Tap here to pick (or create) the folder the agent should work in, then start chatting.",
-    },
-    {
-      // The switch lives in the model picker's popover (tap the model name in
-      // the topbar) — the drawer closes so the topbar is visible.
-      before: () => { document.body.classList.remove("nav-open"); picker.open(); },
-      target: () => picker.el.querySelector(".switch-row"),
-      title: "Allow always",
-      body: "When this is on, the agent's permission requests (running commands, editing files) are approved automatically — smooth, hands-off runs. Turn it off to review and answer each request yourself.",
-    },
-    {
-      before: () => { picker.close(); appearanceMenu.openTab("connection"); },
-      target: () => appearanceMenu.panel.querySelector(".set-content"),
-      title: "Connection",
-      body: "These are the ways your phone can reach this computer — same Wi-Fi, Tailscale, or Cloudflare. Tap one to switch whenever your network changes.",
-    },
-    {
-      // The row exists only inside the phone app (added via the native bridge),
-      // so a browser tour skips this step.
-      target: () => appearanceMenu.panel.querySelector(".ep-add"),
-      optional: true,
-      title: "Add or change the host",
-      body: "Opens the hosts page over your session: select another saved computer, scan a QR to add one, or remove one — without losing where you are.",
-    },
-    {
-      before: () => appearanceMenu.openTab("device"),
-      target: devRow(0),
-      title: "Lock screen",
-      body: "Locks your computer's screen remotely, so no one at the desk can see or touch your session.",
-    },
-    {
-      target: devRow(1),
-      title: "Turn off screen",
-      body: "Switches the computer's display off — the machine keeps running, the screen just goes dark.",
-    },
-    {
-      target: devRow(2),
-      title: "Keep awake",
-      body: "Stops the computer from going to sleep while you work remotely — turn it on before stepping away.",
-    },
-    {
-      target: devRow(3),
-      optional: true, // hidden on OSes the gateway can't register itself on
-      title: "Start with computer",
-      body: "Launches the gateway automatically when the computer starts, so the app always has something to connect to.",
-    },
-    {
-      target: () => appearanceMenu.panel.querySelector(".dev-danger"),
-      title: "Shut down computer",
-      body: "Powers the computer off completely. It takes two taps — the first arms the row (\"Tap again to confirm\"), the second shuts down — so a stray touch can't turn your machine off.",
-    },
-  ];
-}
+// The steps' content lives in guideSteps.js; each run reads the live UI.
+const guideSteps = createGuideSteps({ sidebar, picker, appearanceMenu });
 
 const messageList = createMessageList();
 const dock = createDock({
@@ -175,11 +135,21 @@ const backdrop = el("div", { id: "backdrop", onClick: () => document.body.classL
 const main = el("main", { id: "main" }, topbar.el, messageList.el, dock.el, composer.el);
 document.getElementById("app").append(sidebar.el, main, backdrop);
 
-// Running inside the native app shell (its WebView tags the user agent): the
-// shell already pads for the system bars, so trim our own safe-area padding.
-// Old installs still say ZogagApp — keep matching both.
-const IS_NATIVE = /WakiliApp|ZogagApp/i.test(navigator.userAgent);
+// The dock (permission/question cards) sits between the transcript and the
+// composer: a card appearing AFTER the transcript pinned to the bottom shrinks
+// the pane and leaves the view a card-height above the end — and an agent
+// waiting on that card streams nothing further that would re-pin. Follow dock
+// size changes instead (repin no-ops unless the view is stuck to the bottom).
+new ResizeObserver(() => messageList.repin()).observe(dock.el);
+
+// Inside the native app shell, the shell already pads for the system bars —
+// trim our own safe-area padding.
 if (IS_NATIVE) document.documentElement.classList.add("native-app");
+
+// Swipe the drawer open/closed with a finger — app shell only; browsers keep
+// the tap-to-toggle drawer. Held back while a sidebar popover is up so a drag
+// on the popover can't carry the drawer (and its menus) off-screen with it.
+if (IS_NATIVE) initDrawerSwipe({ sidebar: sidebar.el, backdrop, main, blocked: () => sidebar.menusOpen() });
 
 // Links inside rendered messages (markdown) point elsewhere on the web, but
 // target="_blank" doesn't open in a WebView — hand external links to the native
@@ -216,10 +186,11 @@ const backLayers = [
   // topbar model picker, composer's slash / + menus, sidebar's filter popover
   // and long-press context menu. Always through each component's own close so
   // the popover's backdrop shield is removed with it.
-  { isOpen: () => picker.isOpen() || composer.menusOpen() || sidebar.menusOpen(),
+  { isOpen: () => picker.isOpen() || composer.menusOpen() || sidebar.menusOpen() || mediaMenuLayer.isOpen(),
     close: () => {
       if (picker.isOpen()) return picker.close();
       if (composer.menusOpen()) return composer.closeMenus();
+      if (mediaMenuLayer.isOpen()) return mediaMenuLayer.close();
       sidebar.closeMenus();
     } },
   // Full-screen / modal overlays.
@@ -245,7 +216,7 @@ window.__wakiliBack = () => {
 // ---- theme + accent ----
 function applyTheme(t) {
   document.body.dataset.theme = t;
-  localStorage.setItem(THEME_KEY, t);
+  setPref(KEYS.theme, t);
 }
 
 // Pick readable ink (text/icons on the accent) from the accent's luminance.
@@ -261,18 +232,19 @@ function applyAccent(hex) {
   if (hex) {
     document.body.style.setProperty("--accent", hex);
     document.body.style.setProperty("--accent-ink", accentInk(hex));
-    localStorage.setItem(ACCENT_KEY, hex);
   } else {
     document.body.style.removeProperty("--accent");
     document.body.style.removeProperty("--accent-ink");
-    localStorage.removeItem(ACCENT_KEY);
   }
+  setPref(KEYS.accent, hex || null);
 }
 
-// ---- per-session UI state (drafts, attachments, scroll) ----
+// ---- per-session UI state (drafts, attachments) ----
 // Saved when you switch away, restored when you come back — each chat keeps its
-// own half-typed message, pending attachments, and reading position.
-const uiState = new Map(); // sessionId -> { draft, pending, scrollTop }
+// own half-typed message and pending attachments. Reading position is NOT
+// saved: opening a chat always lands at the end of the transcript (a restored
+// mid-history position shifts as images above it finish loading — not worth it).
+const uiState = new Map(); // sessionId -> { draft, pending }
 let uiSid = null;
 
 // Render an outbox entry (an in-flight/failed send) and hand its UI handle back
@@ -290,17 +262,23 @@ function renderOutboxEntry(entry) {
 // ---- streaming events -> components ----
 emitter.on("userMessage", (t) => messageList.userMessage(t));
 emitter.on("outbox", (entry) => renderOutboxEntry(entry));
+let renderedSid = null; // which session's transcript the pane currently shows
 emitter.on("historyLoaded", (msgs) => {
+  const sid = store.get().activeId;
+  // Opening or switching to a chat always lands at the end of the transcript.
+  // The one exception is the fresh fetch reconciling over the optimistic
+  // cached render of the SAME session: that re-render keeps the current
+  // position, so scrolling right after a chat opens is never yanked back down.
+  const anchor = sid === renderedSid ? messageList.getAnchor() : { bottom: true };
+  renderedSid = sid;
   dock.clear();
   messageList.renderHistory(msgs);
   // In-flight/failed sends for this session render after its history.
-  for (const entry of controller.getOutbox(store.get().activeId)) renderOutboxEntry(entry);
+  for (const entry of controller.getOutbox(sid)) renderOutboxEntry(entry);
   // Outbox rows belong above the live-turn boundary: a snapshot REPLACES
   // everything below the boundary, and an unsent message must survive that.
   messageList.markLive();
-  // Restore where you were reading (falls back to the bottom).
-  const st = uiState.get(store.get().activeId);
-  if (st && st.anchor) messageList.restoreAnchor(st.anchor);
+  messageList.restoreAnchor(anchor);
 });
 // First-time session open: spinner while the transcript fetch runs; error card
 // with Retry when it fails with nothing cached. historyLoaded replaces both.
@@ -350,9 +328,7 @@ store.subscribe((s) => {
   // (this fires before the new session's history renders), then restore the
   // incoming session's draft and attachments.
   if (s.activeId !== uiSid) {
-    // Reading position is saved as a content anchor (first visible unit +
-    // offset), not a raw scrollTop — exact under virtualization and re-wraps.
-    if (uiSid) uiState.set(uiSid, { ...composer.getState(), anchor: messageList.getAnchor() });
+    if (uiSid) uiState.set(uiSid, composer.getState());
     uiSid = s.activeId;
     composer.setState(uiState.get(uiSid));
   }
@@ -384,12 +360,10 @@ function showGate() {
 }
 
 async function boot() {
-  applyTheme(localStorage.getItem(THEME_KEY) || "dark");
-  applyAccent(localStorage.getItem(ACCENT_KEY) || ""); // restore saved accent (empty = theme default)
+  applyTheme(getPref(KEYS.theme) || "dark");
+  applyAccent(getPref(KEYS.accent)); // restore saved accent (empty = theme default)
   if (!api.hasToken()) return showGate();
   try { await controller.init(); }
   catch (e) { if (String(e.message || e).includes("unauthorized")) showGate(); else throw e; }
-  // First visit only: a short tour of the essentials.
-  maybeShowGuide(guideSteps(), { onEnd: () => appearanceMenu.close() });
 }
 boot();

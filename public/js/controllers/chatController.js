@@ -3,29 +3,24 @@
 // events (emitter) that UI components subscribe to.
 
 import { parseClaudeEvent } from "../core/streamParser.js";
+import { KEYS, setPref, takeSession } from "../core/prefs.js";
+import { loadLastConfig, saveLastConfig as persistLastConfig, rememberPermMode, defaultsFor, normalizeControls } from "./agentConfig.js";
+import { createSessionCache } from "./sessionCache.js";
+import { createOutbox } from "./outbox.js";
+import { createDeviceController } from "./device.js";
 
 // Tools gated by the permission hook — their permission card already shows the
 // tool + input, so we suppress the redundant tool chip for them. AskUserQuestion
 // is shown as its own interactive question card, so it's suppressed here too.
-const GATED = new Set(["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "AskUserQuestion", "mcp__wakili__ask_options"]);
-
-// The user's last-chosen permission mode, remembered as a global default so new
-// sessions open in the same posture (notes #5). Per-session changes still win.
-const PERM_KEY = "ra-perm-mode";
+const GATED = new Set(["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "AskUserQuestion", "mcp__wakili__ask_options", "ask_options"]);
 
 // "Allow always" — PER SESSION, stored on the GATEWAY (session.autoAllow), not
 // in this client: the server auto-approves at the permission hook, so it keeps
 // working while the phone/tab is backgrounded or closed. Both old client-side
 // switches are retired — remove them so nobody stays silently auto-allowing
 // from a setting the server can no longer see.
-try {
-  localStorage.removeItem("ra-auto-allow");
-  localStorage.removeItem("ra-auto-allow-sessions");
-} catch { /* private mode */ }
-// The last agent + controls actually used, applied as defaults for new chats so
-// they keep your model/effort/thinking/mode instead of snapping back to the
-// agent's built-in default (e.g. Sonnet).
-const LAST_KEY = "ra-last-config";
+setPref("ra-auto-allow", null);
+setPref("ra-auto-allow-sessions", null);
 
 export function createChatController({ api, store, emitter }) {
   let es = null;          // the ONE multiplexed EventSource (all sessions)
@@ -39,42 +34,7 @@ export function createChatController({ api, store, emitter }) {
   let awaitingSnapshot = false;
   let snapTimer = 0;
 
-  const loadLastConfig = () => { try { return JSON.parse(localStorage.getItem(LAST_KEY) || "null"); } catch { return null; } };
-  const saveLastConfig = () => { const s = store.get(); localStorage.setItem(LAST_KEY, JSON.stringify({ agentId: s.agentId, controls: s.controls })); };
-
-  // Build an agent's control values from its declared defaults, then layer on the
-  // last-used controls for that agent, then any explicit overrides.
-  function defaultsFor(agent, extra) {
-    const c = {};
-    for (const [k, ctl] of Object.entries(agent?.controls || {})) c[k] = ctl.default ?? "";
-    const last = loadLastConfig();
-    if (last && last.agentId === agent?.id && last.controls) {
-      for (const k of Object.keys(c)) if (last.controls[k] != null) c[k] = last.controls[k];
-    }
-    if ("permissionMode" in c) { const g = localStorage.getItem(PERM_KEY); if (g) c.permissionMode = g; }
-    return Object.assign(c, extra || {});
-  }
-
-  // Guard against stale saved values: if a control's saved value (from localStorage
-  // or a session's stored controls) is no longer among its current options — e.g. a
-  // model id that changed to an alias — reset it to that control's default. Without
-  // this the picker can't match the value and falls back to showing the agent label.
-  function normalizeControls(agent, controls) {
-    const out = { ...controls };
-    for (const [k, ctl] of Object.entries(agent?.controls || {})) {
-      // Model-scoped options (e.g. Codex effort): validate against the selected
-      // model's list. `model` is declared first, so out.model is already healed.
-      const options = (ctl.optionsFor && ctl.optionsFor[out.model]) || ctl.options;
-      if (!Array.isArray(options)) continue;
-      if (options.some((o) => o.value === out[k])) continue; // already a valid option
-      // Legacy heal: map an old full model id ("claude-<family>-…") back to its
-      // family alias so the prior choice is preserved; else fall back to default.
-      const m = typeof out[k] === "string" && out[k].match(/^claude-([a-z]+)-/);
-      const alias = m && ctl.options.find((o) => o.value === m[1]);
-      out[k] = alias ? alias.value : (ctl.default ?? "");
-    }
-    return out;
-  }
+  const saveLastConfig = () => { const s = store.get(); persistLastConfig(s.agentId, s.controls); };
 
   // Mark a session busy/idle in the per-session map (drives the composer + badges).
   const setBusy = (id, on) => store.set((s) => ({ busyIds: { ...s.busyIds, [id]: !!on } }));
@@ -82,42 +42,66 @@ export function createChatController({ api, store, emitter }) {
   const bumpPending = (id, d) => store.set((s) => ({ sessions: s.sessions.map((x) => x.id === id ? { ...x, pending: Math.max(0, (x.pending || 0) + d) } : x) }));
   const markUnread = (id) => store.set((s) => ({ unreadIds: { ...s.unreadIds, [id]: true } }));
 
-  // Fetch `id` reconciled against the copy we already hold (RAM only). Sends
-  // since/after so the server can answer { unchanged } (~60 bytes) or a
-  // messages delta instead of the full transcript; the merged result replaces
-  // the cache entry. Returns { unchanged, session } — session is null only
-  // when the server had nothing. The cache never lies: everything it holds is
-  // either fresh from the server or explicitly reconciled against it.
-  async function fetchSession(id) {
-    const cached = sessionCache.get(id);
-    const r = await api.getSession(id, cached ? { since: cached.updatedAt, after: (cached.messages || []).length } : undefined);
-    if (!r) return { session: null };
-    if (r.unchanged) return { unchanged: true, session: cached };
-    let s = r;
-    if (r.delta) {
-      // Merge: the server sent only the messages past our cursor.
-      const { delta, after, messages, ...meta } = r;
-      s = { ...cached, ...meta, messages: [...(cached.messages || []).slice(0, after), ...messages] };
+  // Local mirror of the server's activeTurns: every session's in-progress turn,
+  // assembled from the multiplexed stream — INCLUDING background sessions, whose
+  // content events were previously thrown away. Switching back to a working
+  // session paints from this buffer instantly (zero round trips, like the VS
+  // Code extension); the resync snapshot stays authoritative and replaces it.
+  // Only these interactive tools stay out of parts (they render as their own
+  // card via the gateway's question/permission flow) — mirrors the server's
+  // skip set, NOT the wider GATED display set: Bash/Write/… DO belong here.
+  const QA_TOOLS = new Set(["AskUserQuestion", "mcp__wakili__ask_options", "ask_options"]);
+  const liveParts = new Map(); // sessionId -> parts[] (same shape the server assembles)
+  function accumulate(id, ev) {
+    switch (ev.kind) {
+      case "turnStart": liveParts.set(id, []); break;
+      // Any snapshot is server truth for the whole turn — adopt it even when it
+      // was another tab's resync (the render path filters by client; we don't).
+      case "snapshot": liveParts.set(id, (ev.parts || []).map((p) => ({ ...p }))); break;
+      case "turnEnd": liveParts.delete(id); break; // the turn lives in the transcript now
+      case "text": case "thinking": {
+        const parts = liveParts.get(id) || [];
+        if (!liveParts.has(id)) liveParts.set(id, parts);
+        const type = ev.kind;
+        const l = parts[parts.length - 1];
+        if (l && l.type === type) l.text += ev.text;
+        else parts.push({ type, text: ev.text });
+        break;
+      }
+      case "tools": {
+        const parts = liveParts.get(id) || [];
+        if (!liveParts.has(id)) liveParts.set(id, parts);
+        for (const t of ev.tools) if (!QA_TOOLS.has(t.name)) parts.push({ type: "tool", name: t.name, input: t.input, id: t.id });
+        break;
+      }
+      // NOT "tool": the gateway chip re-announces a tool_use already pushed by
+      // its assistant event — buffering it too would duplicate the card.
+      case "toolResult": {
+        const part = (liveParts.get(id) || []).find((p) => p.type === "tool" && p.id === ev.id);
+        if (part) { part.output = ev.output; part.isError = ev.isError; }
+        break;
+      }
     }
-    sessionCache.set(id, s);
-    return { session: s };
-  }
-
-  // Quietly refetch a background session so switching to it later is instant
-  // AND current (the cache would otherwise show a pre-turn transcript first).
-  async function refreshCache(id) {
-    try { await fetchSession(id); } catch { /* next open fetches */ }
   }
 
   // Ask the server to publish `id`'s live state into the stream; gate content
   // events until it lands. The gate self-clears on failure or timeout so a lost
   // snapshot can't mute the session forever.
-  function requestResync(id) {
+  // A failed POST RETRIES (bounded backoff): the snapshot is the only full-state
+  // re-delivery after a gap, so giving up on one flaky request left everything
+  // streamed while away invisible until turn end — and a missed turn_end stuck
+  // the composer on Stop. The timeout case needs no retry of its own: a snapshot
+  // that never arrived means the stream is down, and the reconnect handler
+  // already re-opens the session (and resyncs) when it comes back.
+  function requestResync(id, attempt = 0) {
     if (!streamReady) return; // the stream's "connected" handler resyncs on open
     awaitingSnapshot = true;
     clearTimeout(snapTimer);
     snapTimer = setTimeout(() => { awaitingSnapshot = false; }, 10000);
-    api.resync(id, clientId).catch(() => { awaitingSnapshot = false; });
+    api.resync(id, clientId).catch(() => {
+      awaitingSnapshot = false;
+      if (attempt < 5) setTimeout(() => { if (store.get().activeId === id) requestResync(id, attempt + 1); }, 1000 * 2 ** attempt);
+    });
   }
 
   // The active session renders live into the chat.
@@ -161,7 +145,7 @@ export function createChatController({ api, store, emitter }) {
           sessions: s.sessions.map((x) => x.id === id ? { ...x, title: ev.title, updatedAt: ev.updatedAt } : x),
           activeSession: s.activeSession ? { ...s.activeSession, title: ev.title } : null,
         }));
-        refreshCache(id);
+        sessionCache.refresh(id);
         break;
       case "turnEnd":
         setBusy(id, false);
@@ -169,7 +153,7 @@ export function createChatController({ api, store, emitter }) {
           store.set((s) => ({ activeSession: s.activeSession ? { ...s.activeSession, title: ev.title } : null }));
         }
         if (!gated) emitter.emit("turnEnd");
-        refreshCache(id); // keep the transcript cache current for the next switch
+        sessionCache.refresh(id); // keep the transcript cache current for the next switch
         refreshSessions();
         refreshFiles(); // any files this turn used/produced
         flushQueued(id); // a queued message (if any) goes out now the turn is done
@@ -189,13 +173,13 @@ export function createChatController({ api, store, emitter }) {
       case "sessionUpdated": {
         if (ev.title) store.set((s) => ({ sessions: s.sessions.map((x) => x.id === id ? { ...x, title: ev.title, updatedAt: ev.updatedAt } : x) }));
         const c = sessionCache.get(id);
-        if (c && c.updatedAt !== ev.updatedAt) refreshCache(id);
+        if (c && c.updatedAt !== ev.updatedAt) sessionCache.refresh(id);
         break;
       }
       case "turnEnd":
         setBusy(id, false);
         markUnread(id);      // a turn finished while you were elsewhere
-        refreshCache(id);    // so switching there shows the new turn instantly
+        sessionCache.refresh(id);    // so switching there shows the new turn instantly
         refreshSessions();   // fresh titles + authoritative pending counts
         refreshFiles();
         flushQueued(id);     // deliver its queued message right away (no poll wait)
@@ -203,12 +187,26 @@ export function createChatController({ api, store, emitter }) {
     }
   }
 
-  function openStream() {
+  // Watchdog against a SILENTLY dead stream (phone backgrounded, wifi→cellular
+  // switch): the server sends a data ping every 15s, so a long all-quiet gap
+  // means the socket is gone even though EventSource never fired an error —
+  // reopen as a reconnect so the repair path (buffers dropped, session
+  // refetched, resync) runs. EventSource's own auto-reconnect only covers
+  // errors it can SEE.
+  let lastEventAt = Date.now();
+  let watchdog = 0;
+  function openStream(asReconnect) {
     if (es) es.close();
     streamReady = false;
+    lastEventAt = Date.now();
+    clearInterval(watchdog);
+    watchdog = setInterval(() => {
+      if (streamReady && Date.now() - lastEventAt > 40000) openStream(true);
+    }, 10000);
     es = api.stream();
-    let firstConnect = true;
+    let firstConnect = !asReconnect;
     es.onmessage = (e) => {
+      lastEventAt = Date.now();
       const raw = JSON.parse(e.data);
       const ev = parseClaudeEvent(raw);
       if (ev.kind === "connected") {
@@ -218,11 +216,23 @@ export function createChatController({ api, store, emitter }) {
         streamReady = true;
         const id = store.get().activeId;
         if (firstConnect) { firstConnect = false; if (id) requestResync(id); }
-        else { refreshSessions(); if (id) openSession(id); }
+        else {
+          // Reconnect: events published while disconnected are gone (the hub
+          // doesn't replay), so every live buffer may have a gap — drop them
+          // all. The openSession fetch + resync snapshot rebuild the active
+          // one; background buffers restart from their next turnStart/snapshot.
+          liveParts.clear();
+          refreshSessions();
+          if (id) openSession(id);
+        }
         return;
       }
       const sid = raw.sessionId;
       if (!sid) return;
+      // Feed the live-turn buffer for EVERY session before routing: background
+      // sessions accumulate silently, the active one stays mirrored even while
+      // the snapshot gate is dropping its render events.
+      accumulate(sid, ev);
       if (sid === store.get().activeId) handleActive(sid, ev);
       else handleBackground(sid, ev);
     };
@@ -260,14 +270,16 @@ export function createChatController({ api, store, emitter }) {
     for (const sid of Object.keys(store.get().queued)) if (!busyIds[sid]) flushQueued(sid);
   }
 
-  // Transcripts from previous opens, so switching chats works instantly (and at
-  // all) on a slow or dead connection; the fresh fetch reconciles over it.
-  const sessionCache = new Map(); // id -> last-fetched session object
+  const sessionCache = createSessionCache(api);
+  const outbox = createOutbox({ api, store, emitter, setBusy });
+  const device = createDeviceController({ api, store });
   let openSeq = 0; // guards against a slow response landing after a newer switch
 
   // Make `s` the on-screen session: state, history render, then a resync so the
   // in-progress turn + pending cards arrive in order on the multiplexed stream.
-  function applySession(id, s) {
+  // `fresh` (optional) is the raw fetch result carrying the server's current
+  // live-turn parts + busy — fresher than anything stored on `s`.
+  function applySession(id, s, fresh) {
     store.set((st) => {
       const agentId = s.agentId || st.agentId;
       const agent = st.agents.find((a) => a.id === agentId);
@@ -276,13 +288,27 @@ export function createChatController({ api, store, emitter }) {
     });
     saveLastConfig(); // the session you're on becomes the default for new chats
     emitter.emit("historyLoaded", s.messages);
-    // Optimistic live-turn paint: the fetched session carries the in-progress
-    // turn's parts (and busy flag), so what streamed while away is on screen
-    // immediately — no waiting for the resync round trip. The resync snapshot
-    // below is still requested and REPLACES this render when it lands: it's
-    // published into the ordered stream, so it can't miss or duplicate deltas.
-    if ((s.parts && s.parts.length) || s.busy) emitter.emit("snapshot", { parts: s.parts || [], busy: !!s.busy });
+    livePaint(id, s, fresh);
     requestResync(id);
+  }
+
+  // Paint the freshest view of `id`'s in-progress turn, best source first: the
+  // parts a just-completed fetch carried (server truth from an HTTP round trip
+  // that JUST succeeded — trustworthy even when the stream is silently dead
+  // and the local buffer is frozen at whatever streamed before it died), else
+  // the local live buffer (covers the optimistic cached apply and fetch
+  // failures), else the cached copy's. The resync snapshot still REPLACES
+  // whatever paints here when it lands: it's published into the ordered
+  // stream, so it can't miss or duplicate deltas. Also adopts the fetch's
+  // busy as truth — a turn_end missed while offline otherwise leaves the
+  // composer stuck on Stop forever.
+  function livePaint(id, s, fresh) {
+    const buf = liveParts.get(id);
+    const parts = (fresh && fresh.parts && fresh.parts.length) ? fresh.parts : ((buf && buf.length) ? buf : (s && s.parts) || []);
+    let busyNow;
+    if (fresh && fresh.busy != null) { busyNow = !!fresh.busy; setBusy(id, busyNow); }
+    else { const b = store.get().busyIds[id]; busyNow = b != null ? !!b : !!(s && s.busy); }
+    if (parts.length || busyNow) emitter.emit("snapshot", { parts, busy: busyNow });
   }
 
   async function openSession(id, attempt = 0) {
@@ -294,21 +320,28 @@ export function createChatController({ api, store, emitter }) {
     // chat. Retries keep the error card up instead of flashing back to a spinner.
     else if (attempt === 0) { store.set({ activeId: id }); emitter.emit("sessionLoading", { id }); }
     let r = null, err = null;
-    try { r = await fetchSession(id); } catch (e) { err = e; }
+    try { r = await sessionCache.fetch(id); } catch (e) { err = e; }
     if (seq !== openSeq) return; // the user has already switched elsewhere
     if (!r || !r.session) {
       // A 404 means the session is gone (deleted on another device) — don't retry.
       if (err && String(err).includes("404")) { sessionCache.delete(id); refreshSessions(); return; }
-      if (cached) return; // the cached view stays up; the stream reconnects on its own
-      if (attempt === 0) emitter.emit("toast", "Can't connect — retrying…");
-      emitter.emit("sessionError", { id }); // error state in the pane; retries continue behind it
+      // With a cached view up, retry QUIETLY behind it (no error pane): this
+      // fetch — and the resync a successful applySession re-triggers — is the
+      // only re-delivery path for a turn streamed while disconnected; giving
+      // up here left it invisible until turn end.
+      if (!cached) {
+        if (attempt === 0) emitter.emit("toast", "Can't connect — retrying…");
+        emitter.emit("sessionError", { id }); // error state in the pane; retries continue behind it
+      }
       setTimeout(() => { if (seq === openSeq) openSession(id, attempt + 1); }, 2500);
       return;
     }
     // Unchanged on the server means the cached render already on screen is
-    // current — skip the re-render (and stream reopen) to avoid a needless flicker.
-    if (r.unchanged) store.set({ activeSession: r.session });
-    else applySession(id, r.session);
+    // current — skip the re-render (and stream reopen) to avoid a needless
+    // flicker. The live turn still needs painting: mid-turn nothing bumps
+    // updatedAt, so a busy session ALWAYS lands here when a cache exists.
+    if (r.unchanged) { store.set({ activeSession: r.session }); livePaint(id, r.session, r); }
+    else applySession(id, r.session, r);
     refreshSessions();
   }
 
@@ -318,6 +351,9 @@ export function createChatController({ api, store, emitter }) {
     const s = await api.createSession({ agentId: store.get().agentId, cwd: cwd || null });
     await refreshSessions();
     await openSession(s.id);
+    // Pin the defaults this chat opened with — otherwise an untouched new chat
+    // recomputes them from "last used" on every revisit and can drift.
+    persistControls();
     emitter.emit("focusInput");
   }
 
@@ -335,10 +371,15 @@ export function createChatController({ api, store, emitter }) {
   async function deleteSession(id) {
     const wasActive = store.get().activeId === id;
     sessionCache.delete(id);
-    outbox.delete(id);
-    sendChain.delete(id);
+    liveParts.delete(id);
+    outbox.forget(id);
     store.set((s) => { const u = { ...s.unreadIds }; delete u[id]; return { unreadIds: u }; });
-    await api.deleteSession(id);
+    try { await api.deleteSession(id); }
+    catch { emitter.emit("toast", "Couldn't delete the chat — check the connection"); return; }
+    // The row goes NOW — waiting for the list refetch left the sidebar's
+    // deleting spinner up even though the delete was already done. The
+    // refresh below keeps the list authoritative.
+    store.set((s) => ({ sessions: s.sessions.filter((x) => x.id !== id) }));
     await refreshSessions();
     if (wasActive) {
       const list = store.get().sessions;
@@ -346,85 +387,6 @@ export function createChatController({ api, store, emitter }) {
       else await newSession();
     }
   }
-
-  // ---- outbox: in-flight sends, tracked per session ----
-  // Every send lives here from "user hit send" until the server accepts it, so
-  // switching sessions (or a failure) can't lose it invisibly. The chat renders
-  // outbox entries after history with a "Sending… / Retry / Discard" status row
-  // (main.js listens to the "outbox" event and hands back a UI handle).
-  let outboxSeq = 0;
-  const outbox = new Map(); // sessionId -> [{ key, sessionId, text, raw, controls, agentId, status, handle }]
-  const getOutbox = (id) => outbox.get(id) || [];
-
-  function removeOutbox(entry) {
-    const list = outbox.get(entry.sessionId);
-    if (!list) return;
-    const i = list.indexOf(entry);
-    if (i !== -1) list.splice(i, 1);
-    if (!list.length) outbox.delete(entry.sessionId);
-  }
-
-  function failOutbox(entry, msg) {
-    entry.status = "failed";
-    if (entry.handle) entry.handle.update("failed");
-    emitter.emit("toast", msg);
-  }
-
-  // Post the turn once its attachments are on the laptop. Attachments picked in
-  // the composer are usually already uploaded (eagerly, on pick) or in flight —
-  // use/await that result. Anything without one (a failed eager upload, a
-  // Retry) uploads here. Kept re-runnable so Retry works.
-  async function transmit(entry) {
-    const id = entry.sessionId;
-    entry.status = "sending";
-    if (entry.handle) entry.handle.update("sending");
-    const attachments = [];
-    for (const a of entry.raw) {
-      let up = a.up || null;
-      if (!up && a.promise) up = await a.promise.catch(() => null); // eager upload still in flight
-      if (!up || !up.path) {
-        try { up = await api.upload(a.name, a.dataBase64, id); } catch { up = null; }
-        if (up && up.path) a.up = up; // remember, so another Retry won't re-upload
-      }
-      if (!up || !up.path) return failOutbox(entry, `Couldn't upload ${a.name} — tap Retry`);
-      attachments.push({ name: up.name, path: up.path, url: up.url || "" });
-    }
-    if (attachments.length && store.get().activeId === id) store.set((s) => ({ files: { ...s.files, uploaded: [...s.files.uploaded, ...attachments] } }));
-    setBusy(id, true);
-    let r = null;
-    try { r = await api.send(id, entry.text, entry.controls, attachments, entry.agentId); }
-    catch {
-      setBusy(id, false);
-      return failOutbox(entry, "Couldn't send — check your connection, then tap Retry");
-    }
-    // Raced another turn (it started between our check and the send): the session
-    // IS busy, so keep the entry failed for a manual retry once it finishes.
-    if (r && r.error === "busy") return failOutbox(entry, "The agent is mid-turn — tap Retry when it finishes");
-    removeOutbox(entry);
-    if (entry.handle) entry.handle.update("sent");
-  }
-
-  // FIFO per session: every send (its uploads included) waits for the previous
-  // one, so a quick second message can never overtake a first one whose file is
-  // still uploading — order on the wire is the order the user sent.
-  const sendChain = new Map(); // sessionId -> tail promise of the send queue
-  function enqueueSend(id, fn) {
-    const tail = (sendChain.get(id) || Promise.resolve()).then(fn).catch(() => {});
-    sendChain.set(id, tail);
-    return tail;
-  }
-
-  // Deliver one turn to a specific session through its outbox.
-  function deliver(id, text, raw, controls, agentId) {
-    const entry = { key: ++outboxSeq, sessionId: id, text, raw: raw || [], controls, agentId, status: "sending", handle: null };
-    if (!outbox.has(id)) outbox.set(id, []);
-    outbox.get(id).push(entry);
-    if (store.get().activeId === id) emitter.emit("outbox", entry); // render now; main.js sets entry.handle
-    return enqueueSend(id, () => transmit(entry));
-  }
-
-  const retryOutbox = (entry) => { if (entry.status === "failed") enqueueSend(entry.sessionId, () => transmit(entry)); };
-  const discardOutbox = (entry) => { removeOutbox(entry); if (entry.handle) entry.handle.remove(); };
 
   // Composer send. If the active session is busy, queue the message (Claude-Code
   // style) instead of erroring — it goes out when the turn ends or is stopped.
@@ -462,7 +424,7 @@ export function createChatController({ api, store, emitter }) {
       emitter.emit("queued", q);
       return;
     }
-    await deliver(st.activeId, text, raw, st.controls, st.agentId);
+    await outbox.deliver(st.activeId, text, raw, st.controls, st.agentId);
   }
 
   // Send a session's oldest queued message (if any) now that it's free; the
@@ -472,7 +434,7 @@ export function createChatController({ api, store, emitter }) {
     if (!list || !list.length) return;
     const [q, ...rest] = list;
     store.set((s) => { const next = { ...s.queued }; if (rest.length) next[id] = rest; else delete next[id]; return { queued: next }; });
-    deliver(id, q.text, q.raw, q.controls, q.agentId);
+    outbox.deliver(id, q.text, q.raw, q.controls, q.agentId);
   }
 
   function cancelQueued() {
@@ -488,10 +450,23 @@ export function createChatController({ api, store, emitter }) {
     if (id) api.stop(id);
   }
 
+  // Persist the ACTIVE session's picker state (agent + controls) the moment it
+  // changes — not just at send time. Without this, a choice made without
+  // sending afterwards silently reverts: the in-memory copy dies on the next
+  // session switch, and defaultsFor falls back to whatever chat was opened
+  // last. The gateway also reads the saved permissionMode per permission card,
+  // so a mid-turn mode flip counts from the very next card. Fire-and-forget:
+  // if it doesn't land, the send-time persist still applies.
+  function persistControls() {
+    const st = store.get();
+    if (st.activeId) api.saveControls(st.activeId, st.agentId, st.controls).catch(() => {});
+  }
+
   function setControl(key, value) {
-    if (key === "permissionMode") localStorage.setItem(PERM_KEY, value); // remember as the global default
+    if (key === "permissionMode") rememberPermMode(value); // remember as the global default
     store.set((s) => ({ controls: { ...s.controls, [key]: value } }));
     saveLastConfig();
+    persistControls();
   }
 
   // Toggle "Allow always" for the ACTIVE session only. Persisted on the GATEWAY,
@@ -524,6 +499,7 @@ export function createChatController({ api, store, emitter }) {
     await openSession(r.session.id);
     if (model) store.set((s) => ({ controls: { ...s.controls, model } }));
     saveLastConfig();
+    persistControls();
     emitter.emit("handoff", { file: r.file });
     emitter.emit("toast", `Now chatting with ${label} — the transcript is attached, press Send to continue`);
   }
@@ -536,6 +512,7 @@ export function createChatController({ api, store, emitter }) {
     const agent = st.agents.find((a) => a.id === id);
     store.set({ agentId: id, controls: defaultsFor(agent) });
     saveLastConfig();
+    persistControls();
   }
 
   // Pick a model from the tree: switching agent on a non-empty chat goes through
@@ -552,6 +529,7 @@ export function createChatController({ api, store, emitter }) {
       store.set((s) => ({ controls: { ...s.controls, model } }));
     }
     saveLastConfig();
+    persistControls();
   }
 
   function answerPermission(requestId, decision, tool) {
@@ -573,18 +551,6 @@ export function createChatController({ api, store, emitter }) {
   // The global files registry (uploads + agent-sent), shown in the sidebar.
   async function refreshFiles() { try { store.set({ allFiles: await api.files() }); } catch { /* ignore */ } }
 
-  // Device controls (lock the laptop screen; keep it awake while you're away).
-  async function refreshPower() { try { store.set({ power: await api.power() }); } catch { /* ignore */ } }
-  async function lockScreen() { return api.lockScreen(); }
-  async function screenOff() { return api.screenOff(); }
-  async function shutdownComputer() { return api.shutdown(); }
-  async function setKeepAwake(on) { try { const p = await api.keepAwake(on); store.set({ power: p }); return p; } catch { return null; } }
-
-  // Start-at-login: the gateway registers itself with the OS's per-user
-  // autostart mechanism, so this setting lives on the laptop, not the phone.
-  async function refreshAutostart() { try { store.set({ autostart: await api.autostart() }); } catch { /* ignore */ } }
-  async function setAutostart(on) { try { const a = await api.setAutostart(on); store.set({ autostart: a }); return a; } catch { return null; } }
-
   // Undo an eager upload: the user removed the attachment before sending, so
   // delete the file from the laptop and drop it from the sidebar files list.
   async function removeUpload(up) {
@@ -600,16 +566,26 @@ export function createChatController({ api, store, emitter }) {
 
   async function init() {
     openStream(); // the single multiplexed stream, up for the whole app life
+    // Coming back to the foreground (or back online) is the moment a phone
+    // discovers its socket died. Give queued events a beat to drain, then: a
+    // stale stream reopens as a reconnect (full repair); a healthy one just
+    // revalidates the active session's cache (~60 bytes when unchanged).
+    const nudge = () => setTimeout(() => {
+      if (!es) return;
+      if (Date.now() - lastEventAt > 20000) openStream(true);
+      else { const id = store.get().activeId; if (id) sessionCache.refresh(id); }
+    }, 1000);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) nudge(); });
+    window.addEventListener("online", nudge);
     await loadAgents();
     await refreshSessions();
     refreshFiles();
-    refreshPower();
-    refreshAutostart();
+    device.refreshPower();
+    device.refreshAutostart();
     const list = store.get().sessions;
-    // The sidebar's refresh button stashes the open session before reloading;
+    // The sidebar's pull-to-refresh stashes the open session before reloading;
     // honor it so a refresh lands back in the same chat, not the newest one.
-    let resume = null;
-    try { resume = sessionStorage.getItem("ra-resume-sid"); sessionStorage.removeItem("ra-resume-sid"); } catch { /* private mode */ }
+    const resume = takeSession(KEYS.resumeSid);
     if (resume && list.some((s) => s.id === resume)) await openSession(resume);
     else if (list.length) await openSession(list[0].id);
     // An empty list because the load FAILED isn't "no chats yet" — the sidebar
@@ -628,5 +604,16 @@ export function createChatController({ api, store, emitter }) {
     }, 6000);
   }
 
-  return { init, openSession, newSession, renameSession, deleteSession, refreshSessions, send, execTerm, stopActive, cancelQueued, setControl, setAutoAllow, setAgent, pickModel, answerPermission, answerQuestion, browseFolders, createFolder, setCwd, lockScreen, screenOff, shutdownComputer, setKeepAwake, setAutostart, removeUpload, getOutbox, retryOutbox, discardOutbox };
+  return {
+    init, openSession, newSession, renameSession, deleteSession, refreshSessions,
+    send, execTerm, stopActive, cancelQueued, setControl, setAutoAllow, setAgent,
+    pickModel, answerPermission, answerQuestion, browseFolders, createFolder,
+    setCwd, removeUpload,
+    // Device controls (Settings → Device rows render through these).
+    lockScreen: device.lockScreen, screenOff: device.screenOff,
+    shutdownComputer: device.shutdownComputer, setKeepAwake: device.setKeepAwake,
+    setAutostart: device.setAutostart,
+    // Outbox handles for main.js's status rows.
+    getOutbox: outbox.getOutbox, retryOutbox: outbox.retry, discardOutbox: outbox.discard,
+  };
 }

@@ -81,7 +81,7 @@ function describeCommand(file) {
 // Project commands override user commands of the same name (last write wins).
 function customCommands() {
   const out = new Map();
-  for (const dir of [path.join(os.homedir(), ".claude", "commands"), path.join(process.cwd(), ".claude", "commands")]) {
+  for (const dir of [path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"), "commands"), path.join(process.cwd(), ".claude", "commands")]) {
     let files;
     try { files = fs.readdirSync(dir, { recursive: true }); } catch { continue; }
     for (const rel of files) {
@@ -182,14 +182,16 @@ const SETTINGS_PATH = path.join(config.runtimeDir, "claude-settings.json");
 const MCP_CONFIG_PATH = path.join(config.runtimeDir, "mcp-config.json");
 fs.mkdirSync(config.runtimeDir, { recursive: true });
 
-// Permission hook gates mutating tools; the send_to_user MCP tool is pre-allowed
-// (delivering a file to the user shouldn't require approval). AskUserQuestion is
-// also routed through the hook: headless `-p` can't pause for input, so the hook
-// forwards the question to the phone and feeds the chosen answer back in-turn.
+// Permission hook gates mutating tools; the gateway's own MCP tools are
+// pre-allowed — both are phone-facing (delivering a file / showing a question
+// card IS the user interaction), and headless `-p` auto-denies any tool that
+// isn't allowed here or handled by the hook. AskUserQuestion is also routed
+// through the hook: headless `-p` can't pause for input, so the hook forwards
+// the question to the phone and feeds the chosen answer back in-turn.
 fs.writeFileSync(
   SETTINGS_PATH,
   JSON.stringify({
-    permissions: { allow: ["mcp__wakili__send_to_user"] },
+    permissions: { allow: ["mcp__wakili__send_to_user", "mcp__wakili__ask_options"] },
     hooks: {
       PreToolUse: [
         {

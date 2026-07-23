@@ -201,17 +201,3 @@ export function attachOutput(cardEl, output, isError) {
   return true;
 }
 
-// One-line chip for read-only tools (Read/Grep/…), kept for callers that want a
-// compact form; the message list now uses cards so output has somewhere to land.
-export function toolChip(name, input) {
-  const s = (input && typeof input === "object") ? JSON.stringify(input) : String(input == null ? "" : input);
-  return el("div", { class: "tool" }, icon("wrench"), el("span", { text: name + "  " + s.slice(0, 120) }));
-}
-
-// Pick the right node for a tool. Always a card now (even read-only tools) so the
-// tool's output can be shown under it. `input` may be a full object (gated tools,
-// history) or a truncated string (live read-only tools); diffBody renders both.
-// `opts` may carry { output, isError, open }.
-export function renderTool(name, input, opts) {
-  return toolCard(name, input, opts);
-}

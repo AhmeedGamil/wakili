@@ -18,6 +18,7 @@ import { ActivityIndicator, BackHandler, KeyboardAvoidingView, Linking, Platform
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { useCameraPermissions } from "expo-camera";
+import * as Clipboard from "expo-clipboard";
 import { WebView } from "react-native-webview";
 
 import { colors } from "./src/theme";
@@ -194,6 +195,13 @@ function Root() {
     // WebView can't honor target="_blank").
     if (msg.wakiliOpenUrl && msg.wakiliOpenUrl.url) {
       Linking.openURL(msg.wakiliOpenUrl.url).catch(() => {});
+      return;
+    }
+    // Copy an image to the system clipboard. The page can't do it itself: the
+    // web clipboard API doesn't exist on plain-http origins (LAN / Tailscale),
+    // so the web UI sends the pixels here as PNG base64.
+    if (msg.wakiliCopyImage && msg.wakiliCopyImage.base64) {
+      Clipboard.setImageAsync(msg.wakiliCopyImage.base64).catch(() => {});
       return;
     }
     // Settings → Connection → "Saved computers": show the computers page over

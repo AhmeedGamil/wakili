@@ -1,0 +1,12 @@
+.git
+node_modules
+docs
+wakili-android
+wakili-react-native
+wakili.apk
+code-review
+SECURITY_REVIEW.md
+railway.json
+Dockerfile
+.dockerignore
+.env

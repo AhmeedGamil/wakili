@@ -9,20 +9,19 @@
 
 import { el } from "./dom.js";
 import { icon } from "./icons.js";
+import { IS_NATIVE } from "../core/env.js";
+import { KEYS, getJSON, setJSON } from "../core/prefs.js";
+import { createSlashMenu } from "./slashMenu.js";
+import { createAutosize } from "./autosize.js";
 
-const HISTORY_KEY = "ra-term-history";
 const HISTORY_MAX = 200;
 
-// Running inside the native app shell (its WebView tags the user agent) — the
-// same check main.js makes; old installs still say ZogagApp, keep matching both.
-const IS_NATIVE = /WakiliApp|ZogagApp/i.test(navigator.userAgent);
-
 function loadHistory() {
-  try { const a = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]"); return Array.isArray(a) ? a : []; }
-  catch { return []; }
+  const a = getJSON(KEYS.termHistory, []);
+  return Array.isArray(a) ? a : [];
 }
 function saveHistory(list) {
-  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(list.slice(0, HISTORY_MAX))); } catch { /* ignore */ }
+  setJSON(KEYS.termHistory, list.slice(0, HISTORY_MAX));
 }
 
 // Last path segment, for the compact "<folder> $" prompt (full path is in the bar).
@@ -70,9 +69,6 @@ function interactiveHint(command) {
 
 export function createTerminalPage({ onRun }) {
   let history = loadHistory();   // newest-first list of command strings
-  let items = [];                // history entries currently shown in the menu
-  let active = 0;                // highlighted index
-  let menuOpen = false;
   let running = false;
   let terms = [];                // [{ id, label, cwd, out }] — one entry per tab
   let cur = -1;                  // index of the visible terminal
@@ -166,7 +162,7 @@ export function createTerminalPage({ onRun }) {
     overlay.removeAttribute("hidden");
     setTimeout(() => input.focus(), 0);
   }
-  function close() { overlay.setAttribute("hidden", ""); closeMenu(); hideConfirm(); }
+  function close() { overlay.setAttribute("hidden", ""); slash.close(); hideConfirm(); }
 
   // ---- output (scrollback) ----
   function scrollDown(t) { t.out.scrollTop = t.out.scrollHeight; }
@@ -189,58 +185,27 @@ export function createTerminalPage({ onRun }) {
     scrollDown(t);
   }
 
-  // ---- history menu (newest-first, same look as the slash commands) ----
+  // ---- history menu (newest-first, the shared "/" menu component) ----
   function remember(command) {
     history = history.filter((h) => h !== command); // dedupe, then push to front
     history.unshift(command);
     if (history.length > HISTORY_MAX) history = history.slice(0, HISTORY_MAX);
     saveHistory(history);
   }
-  function closeMenu() { menuOpen = false; menu.setAttribute("hidden", ""); menu.innerHTML = ""; }
-  function renderMenu() {
-    menu.innerHTML = "";
-    items.forEach((c, i) => {
-      menu.appendChild(el("button",
-        { type: "button", class: "slash-item" + (i === active ? " active" : ""),
-          onMousedown: (e) => { e.preventDefault(); pick(c); } },
-        el("span", { class: "slash-name", text: c }),
-      ));
-    });
-  }
-  function move(dir) {
-    if (!items.length) return;
-    active = (active + dir + items.length) % items.length;
-    renderMenu();
-    menu.children[active]?.scrollIntoView({ block: "nearest" });
-  }
-  function pick(c) {
-    if (c == null) return;
-    closeMenu();
-    input.value = c;   // drop it into the box; user hits Run (or edits first)
-    autoSize();
-    input.focus();
-  }
-  function syncMenu() {
-    const m = /^\/(\S*)$/.exec(input.value);   // only a bare "/token", no space yet
-    if (!m) return closeMenu();
-    const q = m[1].toLowerCase();
-    items = history.filter((h) => h.toLowerCase().includes(q)); // already newest-first
-    if (!items.length) return closeMenu();
-    active = 0; menuOpen = true; menu.removeAttribute("hidden"); renderMenu();
-  }
+  const slash = createSlashMenu({
+    menu, input,
+    filter: (q) => history.filter((h) => h.toLowerCase().includes(q)), // already newest-first
+    render: (c) => [el("span", { class: "slash-name", text: c })],
+    onPick: (c) => {
+      if (c == null) return;
+      slash.close();
+      input.value = c;   // drop it into the box; user hits Run (or edits first)
+      autoSize();
+      input.focus();
+    },
+  });
 
-  function autoSize() {
-    input.style.height = "auto";
-    input.style.height = Math.min(input.scrollHeight, 160) + "px";
-    // Same behaviour as the chat composer: once the text grows past one line,
-    // the Run button hugs the bottom instead of floating vertically centered.
-    const cs = getComputedStyle(input);
-    let line = parseFloat(cs.lineHeight);
-    if (!line) line = parseFloat(cs.fontSize) * 1.4;
-    const padV = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
-    const lines = Math.round((input.scrollHeight - padV) / line);
-    bar.classList.toggle("multiline", lines > 1);
-  }
+  const autoSize = createAutosize(input, bar, 160);
 
   async function run() {
     if (running) return;
@@ -248,7 +213,7 @@ export function createTerminalPage({ onRun }) {
     if (!t) return;
     const command = input.value.trim();
     if (!command) return;
-    closeMenu();
+    slash.close();
     input.value = "";
     autoSize();
     remember(command);
@@ -270,15 +235,9 @@ export function createTerminalPage({ onRun }) {
 
   runBtn.addEventListener("mousedown", (e) => e.preventDefault());
   form.addEventListener("submit", (e) => { e.preventDefault(); run(); });
-  input.addEventListener("input", () => { autoSize(); syncMenu(); });
+  input.addEventListener("input", () => { autoSize(); slash.sync(); });
   input.addEventListener("keydown", (e) => {
-    if (menuOpen) {
-      if (e.key === "ArrowDown") { e.preventDefault(); return move(1); }
-      if (e.key === "ArrowUp") { e.preventDefault(); return move(-1); }
-      if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); return pick(items[active]); }
-      if (e.key === "Escape") { e.preventDefault(); return closeMenu(); }
-      return;
-    }
+    if (slash.keydown(e)) return; // the history menu owns the keys while open
     // Enter runs; Shift+Enter inserts a newline.
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); run(); }
   });
@@ -289,7 +248,7 @@ export function createTerminalPage({ onRun }) {
     // leaving the whole page: the close-tab confirmation, then the history menu.
     confirmOpen: () => !confirmBox.hidden,
     hideConfirm,
-    menuOpen: () => menuOpen,
-    closeMenu,
+    menuOpen: () => slash.isOpen(),
+    closeMenu: () => slash.close(),
   };
 }

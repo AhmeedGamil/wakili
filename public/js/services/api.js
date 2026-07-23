@@ -1,21 +1,22 @@
 // Data-access layer. The only module that knows the backend's HTTP shape.
 
+import { KEYS, getPref, setPref } from "../core/prefs.js";
+
 // Access token. Captured once from the ?t= the laptop prints (so opening the
 // tunnel link "just works"), then persisted so later visits need no token in the
 // URL. Sent as a header on every call; the URL is scrubbed so it isn't bookmarked.
-const TOKEN_KEY = "remoteAgentToken";
 function loadToken() {
   try {
     const u = new URL(location.href);
     const t = u.searchParams.get("t");
     if (t) {
-      localStorage.setItem(TOKEN_KEY, t);
+      setPref(KEYS.token, t);
       u.searchParams.delete("t");
       history.replaceState(null, "", u.pathname + u.search + u.hash);
       return t;
     }
-    return localStorage.getItem(TOKEN_KEY) || "";
-  } catch { return ""; }
+  } catch { /* fall through to the stored token */ }
+  return getPref(KEYS.token);
 }
 let TOKEN = loadToken();
 const withT = (url) => url + (url.includes("?") ? "&" : "?") + "t=" + encodeURIComponent(TOKEN);
@@ -71,9 +72,12 @@ export const api = {
   // "Allow always" is stored on the gateway (the server auto-approves), so it
   // works even when no client is awake to answer the card.
   setAutoAllow: (id, on) => call("PATCH", `/api/sessions/${id}`, { autoAllow: !!on }),
+  // Persist the picker state (agent + controls) on change, not just at send.
+  saveControls: (id, agentId, controls) => call("PATCH", `/api/sessions/${id}`, { agentId, controls }),
   folders: (path) => call("GET", `/api/folders?path=${encodeURIComponent(path || "")}`),
   createFolder: (parent, name) => call("POST", "/api/folders", { parent, name }),
   files: () => call("GET", "/api/files"),
+  deleteFile: (token) => call("DELETE", `/api/files/${token}`),
   deleteSession: (id) => call("DELETE", `/api/sessions/${id}`),
   // Continue with a different agent: exports the transcript to a handoff file
   // and returns the fresh session for the new agent plus the file to attach.

@@ -12,18 +12,28 @@
 
 import { el, dismissFirst, backdropFor } from "./dom.js";
 import { icon } from "./icons.js";
+import { createSlashMenu } from "./slashMenu.js";
+import { isImageName } from "./media.js";
+import { IS_NATIVE } from "../core/env.js";
 
 export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal, onUpload, onRemoveUpload, commands = [] }) {
   // [{ name, dataBase64, dataUrl, isImg, status, progress, up, promise }]
   // status: "uploading" | "done" | "failed"; up = { path, name, url } once done.
   let pending = [];
-  let items = [];   // commands currently shown in the menu
-  let active = 0;   // highlighted index
-  let menuOpen = false;
   let busy = false; // active session has an in-flight turn (send button becomes Stop)
   let blocked = false; // a permission / question card is up — sending is disabled until answered
 
-  const input = el("textarea", { id: "input", rows: "1", placeholder: "type / for command" });
+  // The box is a contenteditable div, NOT a textarea: Android keyboards commit
+  // clipboard-panel images through the IME's rich-content channel, which plain
+  // text controls categorically refuse — only an editable region can receive
+  // them (the long-press Paste menu works on both; the Gboard image chip only
+  // works here). A `value` accessor mimics the textarea so the rest of this
+  // file and the shared slash menu keep reading/writing input.value untouched.
+  const input = el("div", { id: "input", contenteditable: "true", "data-placeholder": "type / for command" });
+  Object.defineProperty(input, "value", {
+    get: () => input.innerText.replace(/\u00A0/g, " ").replace(/\n$/, ""),
+    set: (v) => { input.textContent = v == null ? "" : String(v); },
+  });
   const send = el("button", { class: "btn send", type: "submit", "aria-label": "Send" }, icon("arrow-up"));
   const fileInput = el("input", { type: "file", multiple: "", style: "display:none" });
   const imgInput = el("input", { type: "file", multiple: "", accept: "image/*", style: "display:none" });
@@ -38,12 +48,10 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
   const bar = el("div", { class: "composer-bar" }, addMenu, attachBtn, input, send);
   const root = el("form", { id: "composer", class: "composer" }, menu, queued, chips, bar, fileInput, imgInput);
 
-  // Where the engine supports it, CSS `field-sizing: content` (in app.css)
-  // auto-grows the textarea natively — ZERO JS measurement on the typing path.
-  // The multiline class is then driven by a ResizeObserver, which fires after
+  // A contenteditable auto-grows natively — ZERO JS measurement on the typing
+  // path. The multiline class is driven by a ResizeObserver, which fires after
   // layout only when the box's size actually changed (no forced reflow).
-  const FIELD_SIZING = typeof CSS !== "undefined" && !!CSS.supports && CSS.supports("field-sizing", "content");
-  if (FIELD_SIZING) {
+  {
     let line = 0;
     new ResizeObserver((entries) => {
       const h = entries[entries.length - 1].contentRect.height;
@@ -54,33 +62,7 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
       bar.classList.toggle("multiline", Math.round(h / line) > 1);
     }).observe(input);
   }
-
-  // Fallback autosize (no field-sizing): every height write here reflows the
-  // whole page (the composer shares a flex column with the transcript), so only
-  // write when the height actually changed. Reset-to-auto happens only when
-  // text got shorter — the one case the box may need to shrink.
-  let lastLen = 0, lastH = 0, lineMetrics = null;
-  function autoSize() {
-    if (FIELD_SIZING) return; // the browser owns sizing; the observer owns the class
-    const len = input.value.length;
-    const shrunk = len < lastLen;
-    lastLen = len;
-    if (shrunk) input.style.height = "auto";
-    const h = Math.min(input.scrollHeight, 180);
-    if (h === lastH && !shrunk) return; // same line count — zero layout writes
-    lastH = h;
-    input.style.height = h + "px";
-    // Buttons sit centered on a single line, but drop to the bottom once the
-    // text grows past two lines (so they don't float in the middle of a tall box).
-    if (!lineMetrics) {
-      const cs = getComputedStyle(input);
-      let line = parseFloat(cs.lineHeight);
-      if (!line) line = parseFloat(cs.fontSize) * 1.4;
-      lineMetrics = { line, padV: parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) };
-    }
-    const lines = Math.round((input.scrollHeight - lineMetrics.padV) / lineMetrics.line);
-    bar.classList.toggle("multiline", lines > 1);
-  }
+  const autoSize = () => {}; // sizing is native; kept for the call sites
 
   // Is there something to send (typed text or a pending attachment)?
   const hasContent = () => input.value.trim().length > 0 || pending.length > 0;
@@ -146,9 +128,15 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
         if (a.up && onRemoveUpload) onRemoveUpload(a.up);
         pending.splice(i, 1); renderChips();
       } }, icon("x"));
-      const card = el("div", { class: "att-card" + (a.isImg ? " img" : ""), title: a.name });
-      if (a.isImg) card.appendChild(el("img", { src: a.dataUrl, alt: a.name }));
-      else card.append(icon("paperclip", "att-ico"), el("div", { class: "att-name", text: a.name }));
+      const card = el("div", { class: "att-card" + (a.isImg ? " img" : "") });
+      if (a.isImg) {
+        // The image itself is the preview; keep generated/pasted filenames out
+        // of visible text, tooltips, and image fallback text.
+        card.appendChild(el("img", { src: a.dataUrl, alt: "" }));
+      } else {
+        card.title = a.name;
+        card.append(icon("paperclip", "att-ico"), el("div", { class: "att-name", text: a.name }));
+      }
       const overlay = attOverlay(a);
       if (overlay) card.appendChild(overlay);
       card.appendChild(remove);
@@ -157,40 +145,19 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
     refreshButton(); // attachments count as content
   }
 
-  // ---- slash menu ----
-  function closeMenu() { menuOpen = false; menu.setAttribute("hidden", ""); menu.innerHTML = ""; }
-  function renderMenu() {
-    menu.innerHTML = "";
-    items.forEach((c, i) => {
-      menu.appendChild(el("button",
-        { type: "button", class: "slash-item" + (i === active ? " active" : ""),
-          onMousedown: (e) => { e.preventDefault(); run(c); } },
-        el("span", { class: "slash-name", text: "/" + c.name }),
-        el("span", { class: "slash-desc", text: c.desc }),
-      ));
-    });
-  }
-  function move(dir) {
-    if (!items.length) return;
-    active = (active + dir + items.length) % items.length;
-    renderMenu();
-    menu.children[active]?.scrollIntoView({ block: "nearest" });
-  }
-  function run(c) {
-    if (!c) return;
-    closeMenu();
-    input.value = "/" + c.name + " ";   // fill it in; user adds args or hits Enter
-    autoSize();
-    input.focus();
-  }
-  function syncMenu() {
-    const m = /^\/(\S*)$/.exec(input.value);   // only a bare "/token", no args yet
-    if (!m || !commands.length) return closeMenu();
-    const q = m[1].toLowerCase();
-    items = commands.filter((c) => c.name.toLowerCase().startsWith(q) || c.desc.toLowerCase().includes(q));
-    if (!items.length) return closeMenu();
-    active = 0; menuOpen = true; menu.removeAttribute("hidden"); renderMenu();
-  }
+  // ---- slash menu (shared component; this wires the agent's commands in) ----
+  const slash = createSlashMenu({
+    menu, input,
+    filter: (q) => commands.filter((c) => c.name.toLowerCase().startsWith(q) || c.desc.toLowerCase().includes(q)),
+    render: (c) => [el("span", { class: "slash-name", text: "/" + c.name }), el("span", { class: "slash-desc", text: c.desc })],
+    onPick: (c) => {
+      if (!c) return;
+      slash.close();
+      input.value = "/" + c.name + " ";   // fill it in; user adds args or hits Enter
+      autoSize();
+      input.focus();
+    },
+  });
 
   function submit() {
     if (blocked) return; // answer the pending permission / question first
@@ -231,24 +198,80 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
     addBd.show();
   }
   attachBtn.onclick = () => { if (addMenu.hasAttribute("hidden")) openAddMenu(); else closeAddMenu(); };
-  // Read picked files to base64; the full data URL doubles as the image preview.
+  // One file (picked or pasted) → pending item: read to base64 (the data URL
+  // doubles as the image preview), then eager-upload while the user types.
+  const addFile = (file, name) => {
+    const isImg = /^image\//.test(file.type) || isImageName(file.name);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result);
+      const a = { name: name || file.name, dataBase64: dataUrl.split(",")[1], dataUrl, isImg };
+      pending.push(a);
+      startUpload(a); // eager: the transfer runs while the user types
+      renderChips();
+    };
+    reader.readAsDataURL(file);
+  };
   const readPicked = (inp) => {
-    for (const file of inp.files) {
-      const isImg = /^image\//.test(file.type) || /\.(png|jpe?g|gif|webp|svg|bmp|heic)$/i.test(file.name);
-      const reader = new FileReader();
-      reader.onload = () => {
-        const dataUrl = String(reader.result);
-        const a = { name: file.name, dataBase64: dataUrl.split(",")[1], dataUrl, isImg };
-        pending.push(a);
-        startUpload(a); // eager: the transfer runs while the user types
-        renderChips();
-      };
-      reader.readAsDataURL(file);
-    }
+    for (const file of inp.files) addFile(file);
     inp.value = "";
   };
   fileInput.onchange = () => readPicked(fileInput);
   imgInput.onchange = () => readPicked(imgInput);
+  // Pasting an image attaches it exactly like a picked file; plain-text pastes
+  // are left to the browser. Clipboard images are often nameless — stamp one so
+  // the chip and the upload have something to show. Returns whether it took
+  // anything, so the caller knows to cancel the default insertion.
+  const takeImages = (dt) => {
+    const imgs = [...((dt && dt.items) || [])].filter((it) => it.kind === "file" && /^image\//.test(it.type));
+    if (!imgs.length) return false;
+    for (const it of imgs) {
+      const f = it.getAsFile();
+      if (!f) continue;
+      const ext = (f.type.split("/")[1] || "png").replace("jpeg", "jpg");
+      addFile(f, f.name || `pasted-${Date.now()}.${ext}`);
+    }
+    return true;
+  };
+  // Two delivery channels for the same gesture: the long-press Paste menu (and
+  // Ctrl+V) raises a real "paste" event; an image tapped in the KEYBOARD's
+  // clipboard panel commits through the IME instead — no paste event at all,
+  // only a beforeinput carrying the file in its dataTransfer. Handle both.
+  // (Canceling a handled paste means no beforeinput follows — never both.)
+  // Every paste is intercepted: the box is contenteditable, and letting the
+  // default run would insert rich HTML — text goes back in as plain text.
+  input.addEventListener("paste", (e) => {
+    if (blocked) return; // same gate as the + menu while a card awaits an answer
+    e.preventDefault();
+    if (takeImages(e.clipboardData)) return;
+    const txt = e.clipboardData ? e.clipboardData.getData("text/plain") : "";
+    if (txt) document.execCommand("insertText", false, txt);
+  });
+  input.addEventListener("beforeinput", (e) => {
+    if (blocked) return;
+    if (e.dataTransfer && takeImages(e.dataTransfer)) e.preventDefault();
+  });
+  // One image data URL → pending attachment (the entry point for swept IME
+  // images and the shell-assisted clipboard paste).
+  const addDataUrl = (dataUrl, name) => {
+    if (!/^data:image\//.test(dataUrl || "")) return false;
+    const a = { name: name || `pasted-${Date.now()}.png`, dataBase64: dataUrl.split(",")[1], dataUrl, isImg: true };
+    pending.push(a);
+    startUpload(a);
+    renderChips();
+    return true;
+  };
+  // Belt and braces: some WebView versions commit an IME image straight into
+  // the editable as a literal <img> without a cancelable beforeinput. Sweep
+  // any such node into a real attachment (data URLs only — there's nothing
+  // fetchable behind other schemes), and never leave images sitting in the box.
+  const sweepImgs = () => {
+    for (const im of [...input.querySelectorAll("img")]) {
+      const src = im.getAttribute("src") || "";
+      im.remove();
+      addDataUrl(src);
+    }
+  };
 
   // Keep focus on the textarea when the button is tapped — otherwise the first tap
   // just blurs the input (dismissing the keyboard) and you'd need a second tap.
@@ -258,19 +281,18 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
   send.addEventListener("click", (e) => { if (blocked) { e.preventDefault(); return; } if (busy && !hasContent()) { e.preventDefault(); onStop && onStop(); } });
 
   root.addEventListener("submit", (e) => { e.preventDefault(); submit(); });
-  input.addEventListener("input", () => { autoSize(); syncMenu(); refreshButton(); closeAddMenu(); });
-  input.addEventListener("keydown", (e) => {
-    // Slash-command menu still uses the keys while it's open.
-    if (menuOpen) {
-      if (e.key === "ArrowDown") { e.preventDefault(); return move(1); }
-      if (e.key === "ArrowUp") { e.preventDefault(); return move(-1); }
-      if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); return run(items[active]); }
-      if (e.key === "Escape") { e.preventDefault(); return closeMenu(); }
-    }
-    // Otherwise Enter just inserts a newline (default) — only the Send button sends.
+  input.addEventListener("input", () => {
+    sweepImgs();
+    // A fully-deleted contenteditable keeps a stray <br>, which defeats the
+    // :empty placeholder — drop the husk so "empty" is truly empty.
+    if (!input.textContent) input.replaceChildren();
+    autoSize(); slash.sync(); refreshButton(); closeAddMenu();
   });
+  // The slash menu owns the keys while it's open. Otherwise Enter just inserts
+  // a newline (default) — only the Send button sends.
+  input.addEventListener("keydown", (e) => { slash.keydown(e); });
   document.addEventListener("click", (e) => {
-    if (!root.contains(e.target) && menuOpen) closeMenu();
+    if (!root.contains(e.target) && slash.isOpen()) slash.close();
   });
   // The + menu closes on a tap outside itself, and that tap does nothing else —
   // dismissing is its own gesture (same as the sidebar filter and model picker).
@@ -284,8 +306,8 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
     el: root,
     // Native back button: a transient menu (slash commands or the + menu) is
     // its own dismissible layer — report whether one is open and close it.
-    menusOpen: () => menuOpen || !addMenu.hasAttribute("hidden"),
-    closeMenus: () => { if (menuOpen) closeMenu(); else closeAddMenu(); },
+    menusOpen: () => slash.isOpen() || !addMenu.hasAttribute("hidden"),
+    closeMenus: () => { if (slash.isOpen()) slash.close(); else closeAddMenu(); },
     // Busy → Stop when the box is empty, Send when there's text to queue.
     setBusy: (b) => { busy = !!b; refreshButton(); },
     // Block sending while a permission / question card awaits an answer.
@@ -310,14 +332,14 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
       }
     },
     focus: () => input.focus(),
-    setCommands: (list) => { commands = Array.isArray(list) ? list : []; if (menuOpen) syncMenu(); },
+    setCommands: (list) => { commands = Array.isArray(list) ? list : []; if (slash.isOpen()) slash.sync(); },
     // Per-session state: the draft text and pending attachments are saved on
     // session switch and restored when you come back — nothing leaks across chats.
     getState: () => ({ draft: input.value, pending: pending.slice() }),
     setState: (st) => {
       pending = (st && st.pending) ? st.pending.slice() : [];
       input.value = (st && st.draft) || "";
-      closeMenu(); closeAddMenu();
+      slash.close(); closeAddMenu();
       renderChips(); // also refreshes the send button
       autoSize();
     },

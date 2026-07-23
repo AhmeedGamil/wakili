@@ -1,23 +1,25 @@
-// Sidebar: logo, new-chat button, a compact Files entry (opens the full Files
-// page), a "Sessions" header with a filter menu, the session list, and the
-// footer menus. The session list renders one of two ways, picked in the filter
-// popover and remembered in localStorage:
-//   - "By project": sessions grouped under their folder, each group with its own
-//     + to start a chat already assigned to that folder.
-//   - "By latest": one flat, newest-first list with a folder badge per row.
+// Sidebar: a floating brand (logo + name) over one scrolling column — the
+// "New chat" split button (tap = last project, folder half = pick a project),
+// the Files row, then a "Sessions" header with a filter menu and the session
+// list; Settings sits alone in a pinned footer under the scroll. Pulling the
+// column down from the top reveals a refresh chip under the brand
+// (pull-to-refresh). The session list renders one of two ways, picked in the
+// filter popover and remembered in localStorage:
+//   - "By project": sessions grouped under their folder; the header collapses/
+//     expands the group (remembered per device), its + starts a chat there.
+//   - "By latest": one flat, newest-first list, each row with a
+//     "folder · time-ago" line under the title.
 // Long-pressing (or right-clicking) a session row opens a small Rename/Delete
 // menu; Delete asks for confirmation before it reports the intent.
 // Pure UI — it renders from data and reports user intent through callbacks.
 
 import { el, dismissFirst, backdropFor } from "./dom.js";
 import { icon } from "./icons.js";
-
-const VIEW_KEY = "ra-session-view"; // "project" | "all"
-const MODEL_KEY = "ra-session-model"; // "1" = show each session's model in the list
+import { KEYS, getPref, setPref, getJSON, setJSON, putSession } from "../core/prefs.js";
 
 export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDelete, onRename, onOpenFiles, onAppearance, onRetrySessions }) {
-  let view = localStorage.getItem(VIEW_KEY) === "all" ? "all" : "project";
-  let showModel = localStorage.getItem(MODEL_KEY) === "1";
+  let view = getPref(KEYS.sessionView) === "all" ? "all" : "project";
+  let showModel = getPref(KEYS.sessionModel) === "1";
   let last = { sessions: [], activeId: null, busyIds: {}, unreadIds: {}, agents: [], sessionsState: "loading" }; // cached for re-render on toggle
 
   const filesBtn = el("button", { class: "side-files-btn", type: "button", onClick: onOpenFiles },
@@ -31,7 +33,7 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
       icon(ico), el("span", { class: "sess-opt", text: label }), icon("check", "sess-check"));
   const modelItem = el("button", { type: "button", onClick: () => {
     showModel = !showModel;
-    localStorage.setItem(MODEL_KEY, showModel ? "1" : "0");
+    setPref(KEYS.sessionModel, showModel ? "1" : "0");
     renderToggle();
     renderSessions();
   } }, icon("bot"), el("span", { class: "sess-opt", text: "Show model" }), icon("check", "sess-check"));
@@ -45,25 +47,19 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
   function openPop() { pop.hidden = false; popBd.show(); }
   function closePop() { pop.hidden = true; popBd.hide(); }
   const filterBtn = el("button", { class: "sess-filter", type: "button", title: "Group sessions", onClick: () => { pop.hidden ? openPop() : closePop(); } }, icon("filter"));
-  const refreshBtn = el("button", { class: "sess-filter", type: "button", title: "Refresh", onClick: () => {
-    if (refreshBtn.classList.contains("spin")) return; // already reloading
-    // Immediate feedback: spin the icon while the page reload kicks in (there's
-    // a brief blank moment before it takes over).
-    refreshBtn.classList.add("spin");
-    // Come back to the same chat after the reload — a refresh shouldn't dump
-    // you into the first session like a cold start would.
-    try { if (last.activeId) sessionStorage.setItem("ra-resume-sid", last.activeId); } catch { /* private mode */ }
-    location.reload();
-  } }, icon("refresh"));
-  const sessHead = el("div", { class: "sess-head" }, el("span", { class: "sess-title", text: "Sessions" }), refreshBtn, filterBtn, pop);
+  const sessHead = el("div", { class: "sess-head" }, el("span", { class: "sess-title", text: "Sessions" }), filterBtn, pop);
   dismissFirst(() => !pop.hidden, (t) => sessHead.contains(t), closePop);
 
   const list = el("nav", { class: "session-list" });
 
-  // "New session" row (same style as Files/Settings): one tap starts a new
-  // chat in the last selected project, no picker.
-  const newSessionBtn = el("button", { class: "side-files-btn", type: "button", onClick: onNewLast },
-    el("span", { class: "sf-left" }, icon("plus"), el("span", { text: "New session" })));
+  // "New chat": THE primary action, so it sits first and reads accent. A split
+  // button — the wide half starts a chat in the last selected project (no
+  // picker), the folder half opens the picker for "somewhere else".
+  const newBtn = el("div", { class: "side-new" },
+    el("button", { class: "side-new-main", type: "button", onClick: onNewLast },
+      icon("plus"), el("span", { text: "New chat" })),
+    el("button", { class: "side-new-pick", type: "button", title: "New chat in a project…", onClick: onNew },
+      icon("folder")));
 
   // Long-press (touch) or right-click menu on a session row: Rename / Delete.
   // Delete opens a centered confirmation dialog. The menu is attached to <body>
@@ -114,34 +110,79 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
         el("div", { class: "confirm-msg", text: `"${s.title || "New chat"}" and its history will be permanently deleted.` }),
         el("div", { class: "confirm-row" },
           el("button", { class: "btn", type: "button", onClick: () => overlay.remove() }, "Cancel"),
-          el("button", { class: "btn danger", type: "button", onClick: () => { overlay.remove(); onDelete(s.id); } }, "Delete"))));
+          el("button", { class: "btn danger", type: "button", onClick: () => { overlay.remove(); startDelete(s); } }, "Delete"))));
     document.body.appendChild(overlay);
+  }
+  // Confirmed delete: red spinner on the row until the server answers (the row
+  // usually disappears from the refreshed list first; the finally is for
+  // failures, where the row stays and the spinner must come off).
+  const deletingIds = new Set();
+  async function startDelete(s) {
+    if (deletingIds.has(s.id)) return;
+    deletingIds.add(s.id);
+    renderSessions();
+    try { await onDelete(s.id); } catch { /* failure toast comes from the controller */ }
+    finally { deletingIds.delete(s.id); renderSessions(); }
   }
   dismissFirst(() => !ctx.hidden, (t) => ctx.contains(t), closeCtx);
   // Settings (connection, device, theme, accent, formatting) live in a page
-  // opened by this button — it sits right under Files, in the same style.
+  // opened by this button — pinned in a footer under the scroll, out of the
+  // content's way, like every settings gear ends up.
   const settingsBtn = el("button", { class: "side-files-btn", type: "button", onClick: () => onAppearance && onAppearance() },
     el("span", { class: "sf-left" }, icon("settings"), el("span", { text: "Settings" })));
+  const foot = el("div", { class: "side-foot" }, settingsBtn);
 
-  const selectBtn = el("button", { class: "side-files-btn", type: "button", onClick: onNew },
-    el("span", { class: "sf-left" }, icon("folder"), el("span", { text: "Select project" })));
+  // Everything below the brand scrolls as one column; the brand floats over it
+  // (absolute, with a fade — see .side-brand) so content slides out under it.
+  // A hairline under Files separates the action rows from the sessions area.
+  const scroll = el("div", { class: "side-scroll" }, newBtn, filesBtn, el("div", { class: "side-sep" }), sessHead, list);
+
+  // Pull-to-refresh (replaces the old refresh button): dragging the
+  // scrolled-to-top sidebar down slides a spinner chip out from under the
+  // brand; releasing past the threshold reloads. JS only feeds --pull (the
+  // damped drag distance, a plain number) — the slide/fade/rotate live in CSS.
+  const pull = el("div", { class: "side-pull" }, el("span", { class: "side-pull-ico" }, icon("refresh")));
+  const PULL_GO = 58; // release past this (damped px) → refresh
+  let pullFrom = -1, pullAt = 0, reloading = false;
+  const setPull = (d) => { pullAt = d; pull.style.setProperty("--pull", String(d)); pull.classList.toggle("ready", d >= PULL_GO); };
+  function endPull() {
+    if (pullFrom < 0 || reloading) return;
+    pullFrom = -1;
+    if (pullAt >= PULL_GO) {
+      // Same as the old refresh button: keep spinning while the reload kicks
+      // in, and stash the open chat so the reload comes back to it.
+      reloading = true;
+      pull.classList.add("run");
+      if (last.activeId) putSession(KEYS.resumeSid, last.activeId);
+      location.reload();
+    } else { pull.classList.add("settle"); setPull(0); }
+  }
+  scroll.addEventListener("touchstart", (e) => { pull.classList.remove("settle"); pullFrom = scroll.scrollTop <= 0 ? e.touches[0].clientY : -1; }, { passive: true });
+  scroll.addEventListener("touchmove", (e) => {
+    if (pullFrom < 0 || reloading) return;
+    const dy = e.touches[0].clientY - pullFrom;
+    // Not a pull (finger going up, or the list isn't at the top): keep the
+    // anchor at the finger so a later downward drag measures from there.
+    if (dy <= 0 || scroll.scrollTop > 0) { if (pullAt) setPull(0); pullFrom = e.touches[0].clientY; return; }
+    e.preventDefault(); // the pull owns this gesture — no page scroll/refresh underneath
+    setPull(dy * 0.5);  // damped: the chip trails the finger
+  }, { passive: false });
+  scroll.addEventListener("touchend", endPull);
+  scroll.addEventListener("touchcancel", endPull);
 
   const root = el("aside", { id: "sidebar" },
     el("div", { class: "side-brand" },
       el("span", { class: "brand-logo", "aria-hidden": "true" }),
       el("span", { class: "brand-name", text: "Wakili" })),
-    selectBtn,
-    filesBtn,
-    settingsBtn,
-    newSessionBtn,
-    sessHead,
-    list,
+    pull,
+    scroll,
+    foot,
   );
 
   function setView(v) {
     if (v === view) return;
     view = v;
-    localStorage.setItem(VIEW_KEY, v);
+    setPref(KEYS.sessionView, v);
     renderToggle();
     renderSessions();
   }
@@ -169,14 +210,16 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
   }
 
   function sessionRow(s, activeId, busyIds, unreadIds, badge) {
-    // Status, most-urgent first: waiting for your answer (permission/question),
-    // then working, then "finished while you were away", else nothing. No
+    // Deletion owns the leading slot. The ordinary status flag stays at the
+    // trailing edge: waiting for an answer, working, unread, or nothing. No
     // placeholder when there's no status — an empty flex child would still eat
     // a row gap and push the model pill off the right edge.
+    const deleting = deletingIds.has(s.id);
+    const deletingSpinner = deleting ? el("span", { class: "spinner-danger", title: "Deleting…" }) : null;
     let flag = null;
-    if (s.pending > 0) flag = el("span", { class: "s-pending", title: "Waiting for your answer" }, icon("lock"));
-    else if (busyIds[s.id] || s.busy) flag = el("span", { class: "s-busy", title: "Working…" });
-    else if (unreadIds[s.id]) flag = el("span", { class: "s-unread", title: "New reply" });
+    if (!deleting && s.pending > 0) flag = el("span", { class: "s-pending", title: "Waiting for your answer" }, icon("lock"));
+    else if (!deleting && (busyIds[s.id] || s.busy)) flag = el("span", { class: "s-busy", title: "Working…" });
+    else if (!deleting && unreadIds[s.id]) flag = el("span", { class: "s-unread", title: "New reply" });
     const title = el("span", { class: "s-title", text: s.title || "New chat" });
     const main = badge
       ? el("div", { class: "s-main" }, title, el("span", { class: "s-badge", text: badge }))
@@ -189,7 +232,7 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
     let holdTimer = 0, held = false;
     const row = el("div",
       { class: "session" + (s.id === activeId ? " active" : ""), onClick: () => { if (held) { held = false; return; } onSelect(s.id); } },
-      main, model, flag);
+      deletingSpinner, main, model, flag);
     const armHold = (x, y) => { held = false; clearTimeout(holdTimer); holdTimer = setTimeout(() => { held = true; openCtx(s, x, y); }, 500); };
     row.addEventListener("touchstart", (e) => { const t = e.touches[0]; armHold(t.clientX, t.clientY); }, { passive: true });
     row.addEventListener("touchmove", () => clearTimeout(holdTimer), { passive: true });
@@ -220,11 +263,17 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
       return;
     }
     if (view === "all") {
-      // Flat, newest-first (server order), each row tagged with its folder.
-      for (const s of sessions) list.appendChild(sessionRow(s, activeId, busyIds, unreadIds, s.cwd ? baseName(s.cwd) : "Default project"));
+      // Flat, newest-first (server order), each row tagged "folder · time-ago".
+      for (const s of sessions) {
+        const folder = s.cwd ? baseName(s.cwd) : "Default project";
+        const ago = timeAgo(s.updatedAt);
+        list.appendChild(sessionRow(s, activeId, busyIds, unreadIds, ago ? folder + " · " + ago : folder));
+      }
       return;
     }
-    // By project: group by folder, each group with a + to start a chat there.
+    // By project: group by folder. The header collapses/expands its group
+    // (persisted per device); only the + starts a chat there — a tap that
+    // creates a session is too heavy a meaning for a whole header row.
     const groups = new Map(); // label -> { cwd, items: [] }
     for (const s of sessions) {
       const label = s.cwd ? baseName(s.cwd) : "Default project";
@@ -232,14 +281,42 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
       groups.get(label).items.push(s);
     }
     for (const [label, group] of groups) {
-      // The whole header is the "new chat in this project" target — a full-width
-      // row beats hunting for the little +, which stays as a visual hint.
+      const key = group.cwd || "";
+      const closed = collapsed.has(key);
       list.appendChild(el("div", {
-        class: "group-head", title: "New chat in " + (group.cwd || "the default project"),
-        onClick: () => onNewInFolder(group.cwd),
-      }, icon("folder", "group-ico"), el("span", { class: "group-label", text: label }), el("span", { class: "group-add" }, icon("plus"))));
-      for (const s of group.items) list.appendChild(sessionRow(s, activeId, busyIds, unreadIds));
+        class: "group-head" + (closed ? " closed" : ""),
+        onClick: () => toggleGroup(key),
+      },
+        icon("chevron-right", "group-chev"),
+        el("span", { class: "group-label", text: label }),
+        closed ? el("span", { class: "group-count", text: String(group.items.length) }) : null,
+        el("button", {
+          class: "group-add", type: "button", title: "New chat in " + (group.cwd || "the default project"),
+          onClick: (e) => { e.stopPropagation(); onNewInFolder(group.cwd); },
+        }, icon("plus"))));
+      if (!closed) for (const s of group.items) list.appendChild(sessionRow(s, activeId, busyIds, unreadIds));
     }
+  }
+
+  // Collapsed project groups, keyed by cwd ("" = default project); survives
+  // reloads so the sidebar opens the way it was left.
+  const collapsed = new Set(getJSON(KEYS.sideGroups, []));
+  function toggleGroup(key) {
+    collapsed.has(key) ? collapsed.delete(key) : collapsed.add(key);
+    setJSON(KEYS.sideGroups, [...collapsed]);
+    renderSessions();
+  }
+
+  // "now" / "5m" / "3h" / "2d", then a short date — enough to place a chat in
+  // time at a glance without reading like a log line.
+  function timeAgo(t) {
+    if (!t) return "";
+    const sec = Math.max(0, (Date.now() - t) / 1000);
+    if (sec < 60) return "now";
+    if (sec < 3600) return Math.floor(sec / 60) + "m";
+    if (sec < 86400) return Math.floor(sec / 3600) + "h";
+    if (sec < 604800) return Math.floor(sec / 86400) + "d";
+    return new Date(t).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   }
 
   function baseName(p) {

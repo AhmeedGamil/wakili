@@ -52,6 +52,91 @@ function killTree(child) {
 const files = new Map(); // token -> { path, name } for downloadable files
 const activeTurns = new Map(); // sessionId -> parts[] being assembled this turn
 
+// Optional message ids make mobile retries idempotent without changing legacy
+// clients. A claim reserves the session before any async session read/agent
+// launch; known ids bridge the small window before the user row reaches disk.
+const turnClaims = new Map(); // sessionId -> { clientMessageId: string|null }
+const knownClientMessageIds = new Map(); // sessionId -> Set<clientMessageId>
+const MAX_CLIENT_MESSAGE_ID_LENGTH = 200;
+const MAX_KNOWN_CLIENT_MESSAGE_IDS = 512;
+
+function knowsClientMessageId(sessionId, clientMessageId) {
+  return !!clientMessageId && knownClientMessageIds.get(sessionId)?.has(clientMessageId) === true;
+}
+
+function rememberClientMessageId(sessionId, clientMessageId) {
+  if (!clientMessageId) return;
+  let ids = knownClientMessageIds.get(sessionId);
+  if (!ids) { ids = new Set(); knownClientMessageIds.set(sessionId, ids); }
+  // Refresh insertion order and keep only a small hot set. Older ids remain
+  // safely discoverable in the persisted transcript after a cache miss.
+  ids.delete(clientMessageId);
+  ids.add(clientMessageId);
+  while (ids.size > MAX_KNOWN_CLIENT_MESSAGE_IDS) ids.delete(ids.values().next().value);
+}
+
+function forgetClientMessageId(sessionId, clientMessageId) {
+  if (!clientMessageId) return;
+  const ids = knownClientMessageIds.get(sessionId);
+  if (!ids) return;
+  ids.delete(clientMessageId);
+  if (!ids.size) knownClientMessageIds.delete(sessionId);
+}
+
+function rememberPersistedClientMessageIds(session) {
+  for (const message of session?.messages || []) {
+    if (typeof message?.clientMessageId === "string" && message.clientMessageId) {
+      rememberClientMessageId(session.id, message.clientMessageId);
+    }
+  }
+}
+
+function hasPersistedClientMessageId(session, clientMessageId) {
+  return !!clientMessageId && (session?.messages || []).some((message) => message?.clientMessageId === clientMessageId);
+}
+
+function reserveTurn(sessionId, clientMessageId) {
+  if (turnClaims.has(sessionId) || busy.has(sessionId)) return null;
+  const claim = { clientMessageId: clientMessageId || null };
+  turnClaims.set(sessionId, claim);
+  busy.add(sessionId);
+  rememberClientMessageId(sessionId, clientMessageId);
+  return claim;
+}
+
+function releaseTurn(sessionId, claim) {
+  if (turnClaims.get(sessionId) !== claim) return;
+  turnClaims.delete(sessionId);
+  busy.delete(sessionId);
+}
+
+function activeClientMessageId(sessionId) {
+  return turnClaims.get(sessionId)?.clientMessageId || null;
+}
+
+// Crash safety for the in-progress turn: RAM (activeTurns) is the live source,
+// but a throttled copy (≤1 write/s) goes to a sidecar file so a gateway crash
+// mid-turn loses at most the last second of streaming — anything that reached
+// the server stays saved. The sidecar lives only between turn start and the
+// turn-end save; boot folds any leftover one back into its transcript.
+const turnSavers = new Map(); // sessionId -> { timer, dirty }
+function touchTurn(id) {
+  let t = turnSavers.get(id);
+  if (!t) { t = { timer: null, dirty: false }; turnSavers.set(id, t); }
+  t.dirty = true;
+  if (t.timer) return; // trailing throttle: at most one write/s, always within 1s of the last delta
+  t.timer = setTimeout(() => {
+    t.timer = null; t.dirty = false;
+    const parts = activeTurns.get(id);
+    if (parts) sessionStore.savePendingTurn(id, parts).catch(() => { /* retried on the next delta */ });
+  }, 1000);
+}
+function stopTurnSaver(id) {
+  const t = turnSavers.get(id);
+  if (t && t.timer) clearTimeout(t.timer);
+  turnSavers.delete(id);
+}
+
 // Open permission/question cards awaiting an answer, kept per session so a
 // stream that (re)opens — switching back to the chat, or a network reconnect —
 // can replay them. Without this the card is published once and lost if nobody
@@ -95,7 +180,13 @@ function capBytes(str, max) {
 const GATEWAY_CWD = process.cwd();
 // `pending` = open permission/question cards awaiting the user, so the sidebar
 // can flag background sessions that need attention.
-const withMeta = (s) => ({ ...s, busy: busy.has(s.id), pending: pendingCards.get(s.id)?.size || 0, effectiveCwd: s.cwd || GATEWAY_CWD });
+const withMeta = (s) => ({
+  ...s,
+  busy: busy.has(s.id),
+  pending: pendingCards.get(s.id)?.size || 0,
+  effectiveCwd: s.cwd || GATEWAY_CWD,
+  activeClientMessageId: activeClientMessageId(s.id),
+});
 
 // The URLs this same gateway is reachable on, surfaced to the page so it can
 // offer an in-page connection switcher. LAN + Tailscale are discovered at
@@ -187,15 +278,17 @@ async function readBody(req) {
 
 // --- one streaming turn: persist the user message, stream agent events to the
 //     session's subscribers, then persist the assembled assistant reply. ---
-async function runTurn(session, text, controls, attachments, agentId) {
-  // switching agent on a session starts a fresh thread (resume ids are per-agent)
-  if (agentId && agentId !== session.agentId) { session.agentId = agentId; session.resumeId = null; }
-  const agent = getAgent(session.agentId) || getAgent("claude");
-  busy.add(session.id);
+async function runTurn(session, text, controls, attachments, agentId, clientMessageId, claim) {
+  let userPersisted = false;
+  try {
+    // switching agent on a session starts a fresh thread (resume ids are per-agent)
+    if (agentId && agentId !== session.agentId) { session.agentId = agentId; session.resumeId = null; }
+    const agent = getAgent(session.agentId) || getAgent("claude");
 
   // Attachments are persisted with the message (name + display URL) so the chat
   // still shows them after switching sessions or reloading — not just live.
   const userMsg = { role: "user", text };
+  if (clientMessageId) userMsg.clientMessageId = clientMessageId;
   if (attachments && attachments.length) {
     userMsg.attachments = attachments.map((a) => ({ name: a.name, url: a.url || "", image: IMG_RE.test(a.name || "") }));
   }
@@ -203,8 +296,9 @@ async function runTurn(session, text, controls, attachments, agentId) {
   if (session.title === "New chat" && (text || attachments?.length)) session.title = (text || attachments[0].name).slice(0, 48);
   if (controls) session.controls = controls;
   await sessionStore.save(session);
+  userPersisted = true;
 
-  publish(session.id, { type: "_gateway", subtype: "turn_start" });
+  publish(session.id, { type: "_gateway", subtype: "turn_start", clientMessageId });
 
   // Give the agent the uploaded files' paths so it can Read them (images/docs).
   let prompt = text;
@@ -219,9 +313,10 @@ async function runTurn(session, text, controls, attachments, agentId) {
   // Assemble the turn as ordered parts so history (commands, thoughts) replays.
   const parts = [];
   activeTurns.set(session.id, parts);
-  const pushText = (t) => { const l = parts[parts.length - 1]; if (l && l.type === "text") l.text += t; else parts.push({ type: "text", text: t }); };
-  const pushThink = (t) => { const l = parts[parts.length - 1]; if (l && l.type === "thinking") l.text += t; else parts.push({ type: "thinking", text: t }); };
+  const pushText = (t) => { const l = parts[parts.length - 1]; if (l && l.type === "text") l.text += t; else parts.push({ type: "text", text: t }); touchTurn(session.id); };
+  const pushThink = (t) => { const l = parts[parts.length - 1]; if (l && l.type === "thinking") l.text += t; else parts.push({ type: "thinking", text: t }); touchTurn(session.id); };
 
+  let closed = false;
   const child = agent.run({
     text: prompt,
     controls: session.controls || {},
@@ -239,10 +334,12 @@ async function runTurn(session, text, controls, attachments, agentId) {
         if (evt.message.model === "<synthetic>") {
           for (const b of evt.message.content || []) if (b.type === "text") pushText(b.text);
         } else {
-          // AskUserQuestion / ask_options render as their own interactive card, not a tool chip.
-          const skip = new Set(["AskUserQuestion", "mcp__wakili__ask_options"]);
+          // AskUserQuestion / ask_options render as their own interactive card
+          // (and persist as a qa part), not a tool chip. Codex reports the MCP
+          // tool under its bare name — cover both spellings.
+          const skip = new Set(["AskUserQuestion", "mcp__wakili__ask_options", "ask_options"]);
           // Keep the tool_use id so the matching tool_result (output) can attach to it.
-          for (const b of evt.message.content || []) if (b.type === "tool_use" && !skip.has(b.name)) parts.push({ type: "tool", name: b.name, input: b.input, id: b.id });
+          for (const b of evt.message.content || []) if (b.type === "tool_use" && !skip.has(b.name)) { parts.push({ type: "tool", name: b.name, input: b.input, id: b.id }); touchTurn(session.id); }
         }
       } else if (evt.type === "user" && evt.message) {
         // Tool output comes back as tool_result blocks on a synthetic "user" turn.
@@ -253,7 +350,7 @@ async function runTurn(session, text, controls, attachments, agentId) {
           const output = capBytes(toolResultText(b.content), MAX_TOOL_OUTPUT_BYTES);
           const isError = !!b.is_error;
           const part = parts.find((p) => p.type === "tool" && p.id === b.tool_use_id);
-          if (part) { part.output = output; part.isError = isError; }
+          if (part) { part.output = output; part.isError = isError; touchTurn(session.id); }
           publish(session.id, { type: "_gateway", subtype: "tool_result", id: b.tool_use_id, output, isError });
         }
       } else if (evt.type === "result" && evt.session_id) {
@@ -263,15 +360,46 @@ async function runTurn(session, text, controls, attachments, agentId) {
     },
     onError: (text) => publish(session.id, { type: "_gateway", subtype: "stderr", text }),
     onClose: async () => {
+      if (closed) return;
+      closed = true;
       activeTurns.delete(session.id);
+      stopTurnSaver(session.id); // no sidecar writes may land after this point
       children.delete(session.id);
-      if (parts.length) session.messages.push({ role: "assistant", parts });
-      await sessionStore.save(session);
-      busy.delete(session.id);
-      publish(session.id, { type: "_gateway", subtype: "turn_end", title: session.title });
+      try {
+        // Re-read from disk before the turn-end save: PATCHes that landed
+        // mid-turn (rename, Allow always, controls) were saved onto their own
+        // fresh copies — saving this closure's stale `session` would silently
+        // revert them. Only the turn's own results carry over.
+        const fresh = await sessionStore.get(session.id);
+        if (fresh) { fresh.resumeId = session.resumeId; session = fresh; }
+        if (parts.length) {
+          const assistantMsg = { role: "assistant", parts };
+          if (clientMessageId) assistantMsg.clientMessageId = clientMessageId;
+          session.messages.push(assistantMsg);
+        }
+        await sessionStore.save(session);
+        // Sidecar cleanup only AFTER the save: the turn must never have a moment
+        // where it exists nowhere durable. A crash in the gap just means boot
+        // recovery sees the duplicate and skips it.
+        sessionStore.clearPendingTurn(session.id);
+      } catch (error) {
+        console.error(`[turn] Failed to persist ${session.id}:`, error);
+      } finally {
+        releaseTurn(session.id, claim);
+        publish(session.id, { type: "_gateway", subtype: "turn_end", title: session.title, clientMessageId });
+      }
     },
   });
   children.set(session.id, child); // keep a handle so a turn can be interrupted
+  } catch (error) {
+    activeTurns.delete(session.id);
+    stopTurnSaver(session.id);
+    children.delete(session.id);
+    releaseTurn(session.id, claim);
+    if (!userPersisted) forgetClientMessageId(session.id, clientMessageId);
+    publish(session.id, { type: "_gateway", subtype: "turn_end", title: session.title, clientMessageId });
+    throw error;
+  }
 }
 
 // Render a session's display transcript as readable markdown for an agent
@@ -318,8 +446,9 @@ const server = http.createServer(async (req, res) => {
     // ---- auth gate ----
     // Everything under /api and /internal needs the token, EXCEPT file downloads:
     // those carry their own unguessable per-file UUID (a capability) so <img src>
-    // and download links work without smuggling the token into every URL.
-    const guarded = (p.startsWith("/api/") || p.startsWith("/internal/")) && !p.startsWith("/api/files/");
+    // and download links work without smuggling the token into every URL. Only
+    // GETs get that pass — mutating a file (DELETE) still needs the real token.
+    const guarded = (p.startsWith("/api/") || p.startsWith("/internal/")) && !(p.startsWith("/api/files/") && m === "GET");
     if (guarded && !authed(req, url)) return json(res, 401, { error: "unauthorized" });
 
     // ---- API ----
@@ -379,6 +508,21 @@ const server = http.createServer(async (req, res) => {
     // every file that's flowed through (uploads + agent-sent), for the sidebar
     if (p === "/api/files" && m === "GET") return json(res, 200, filesLog);
 
+    // Remove one file from the registry (Files page long-press → Delete). Only
+    // files wakili itself stores (uploads) are also removed from disk — agent-
+    // sent entries point at real project files, which must stay untouched.
+    if (p.startsWith("/api/files/") && m === "DELETE") {
+      const token = decodeURIComponent(p.slice("/api/files/".length));
+      const i = filesLog.findIndex((f) => f.token === token);
+      if (i === -1) return json(res, 404, { error: "no such file" });
+      const f = filesLog[i];
+      filesLog.splice(i, 1);
+      saveFilesLog();
+      files.delete(token);
+      if (f.path && f.path.startsWith(config.uploadsDir)) fsp.unlink(f.path).catch(() => {});
+      return json(res, 200, { ok: true });
+    }
+
     // Each summary carries a live `busy` flag so the phone can show per-session
     // status (badges) and enable/disable the composer for the active session only.
     if (p === "/api/sessions" && m === "GET") return json(res, 200, (await sessionStore.list()).map(withMeta));
@@ -399,15 +543,25 @@ const server = http.createServer(async (req, res) => {
         // Conditional GET: a client holding a cached copy sends the updatedAt it
         // has (?since=) — when nothing moved, answer with a tiny stub instead of
         // the whole transcript.
-        const since = url.searchParams.get("since");
-        if (since !== null && Number(since) === s.updatedAt) {
-          return json(res, 200, { unchanged: true, updatedAt: s.updatedAt, busy: busy.has(id), pending: pendingCards.get(id)?.size || 0 });
-        }
         // Include the in-progress turn's parts so a (re)opening client can paint
         // the streamed-so-far content immediately instead of waiting a resync
         // round trip. The resync snapshot stays authoritative (it's ordered with
         // live events on the stream); the client replaces this copy when it lands.
         const parts = activeTurns.get(id) || [];
+        const since = url.searchParams.get("since");
+        if (since !== null && Number(since) === s.updatedAt) {
+          // `parts` ride along even here: mid-turn nothing bumps updatedAt, so a
+          // client switching back always hits this branch — without them the
+          // streamed-so-far turn was invisible until the resync round trip.
+          return json(res, 200, {
+            unchanged: true,
+            updatedAt: s.updatedAt,
+            busy: busy.has(id),
+            pending: pendingCards.get(id)?.size || 0,
+            parts,
+            activeClientMessageId: activeClientMessageId(id),
+          });
+        }
         // Windowed GET: ?last=N returns only the newest N messages plus the
         // total, for clients that virtualize the transcript. Older history
         // pages in via ?before=<index>&count=N → messages [before-count, before).
@@ -458,27 +612,97 @@ const server = http.createServer(async (req, res) => {
           // changing the working dir starts a fresh thread (resume ids are dir-bound)
           if ((s.cwd || "") !== dir) { s.cwd = dir || null; s.resumeId = null; }
         }
+        // Picker state, saved the moment it changes (not just at send time) so
+        // a choice made without sending survives switches/reloads — and the
+        // permission hook reads the NEW mode for the very next card, even
+        // mid-turn. Same agent-switch semantics as runTurn: fresh thread.
+        if (typeof b.agentId === "string" && getAgent(b.agentId) && b.agentId !== s.agentId) { s.agentId = b.agentId; s.resumeId = null; }
+        if (b.controls && typeof b.controls === "object" && !Array.isArray(b.controls)) s.controls = b.controls;
         await sessionStore.save(s);
         return json(res, 200, withMeta(s));
       }
       if (m === "DELETE") {
         await sessionStore.remove(id);
+        knownClientMessageIds.delete(id);
         return json(res, 200, { ok: true });
       }
     }
 
     if ((mm = p.match(/^\/api\/sessions\/([\w-]+)\/messages$/)) && m === "POST") {
       const id = mm[1];
-      const s = await sessionStore.get(id);
-      if (!s) return notFound(res);
-      if (busy.has(id)) return json(res, 409, { error: "busy" });
       const b = await readBody(req);
+      let clientMessageId = null;
+      if (b.clientMessageId != null) {
+        if (typeof b.clientMessageId !== "string") return json(res, 400, { error: "invalid clientMessageId" });
+        clientMessageId = b.clientMessageId.trim();
+        if (!clientMessageId || clientMessageId.length > MAX_CLIENT_MESSAGE_ID_LENGTH) {
+          return json(res, 400, { error: "invalid clientMessageId" });
+        }
+      }
+
+      // A retry of an id already accepted by this process is successful even
+      // if another turn is now busy. This also covers the pre-persistence
+      // window because reserveTurn remembers the id synchronously.
+      if (knowsClientMessageId(id, clientMessageId)) return json(res, 202, { ok: true, duplicate: true });
+
+      const activeClaim = turnClaims.get(id);
+      if (clientMessageId && activeClaim?.clientMessageId === clientMessageId) {
+        return json(res, 202, { ok: true, duplicate: true });
+      }
+      if (activeClaim || busy.has(id)) {
+        // After a gateway restart the in-memory id set is empty. Let an old,
+        // already-persisted retry remain idempotent while a different turn runs.
+        if (clientMessageId) {
+          const current = await sessionStore.get(id);
+          if (!current) return notFound(res);
+          if (hasPersistedClientMessageId(current, clientMessageId)) {
+            rememberClientMessageId(id, clientMessageId);
+            return json(res, 202, { ok: true, duplicate: true });
+          }
+        }
+        return json(res, 409, { error: "busy" });
+      }
+
       const text = (b.text || "").trim();
       // A message can be attachments-only (an image with nothing typed).
       if (!text && !(b.attachments && b.attachments.length)) return json(res, 400, { error: "empty" });
-      json(res, 202, { ok: true });
-      runTurn(s, text, b.controls, b.attachments, b.agentId);
-      return;
+
+      // Claim before the async session read. Otherwise two concurrent POSTs can
+      // both observe idle and launch, or a slow body can retain a stale session
+      // object and overwrite the turn that completed while it was waiting.
+      const claim = reserveTurn(id, clientMessageId);
+      if (!claim) return json(res, 409, { error: "busy" });
+      let s;
+      try {
+        s = await sessionStore.get(id);
+      } catch (error) {
+        releaseTurn(id, claim);
+        forgetClientMessageId(id, clientMessageId);
+        throw error;
+      }
+      if (!s) {
+        releaseTurn(id, claim);
+        forgetClientMessageId(id, clientMessageId);
+        return notFound(res);
+      }
+      rememberPersistedClientMessageIds(s);
+      if (hasPersistedClientMessageId(s, clientMessageId)) {
+        releaseTurn(id, claim);
+        return json(res, 202, { ok: true, duplicate: true });
+      }
+
+      // AWAIT the turn start before answering: runTurn persists the user
+      // message (and spawns the agent) before returning. Answering 202 first
+      // let a fetch racing right behind the send read a transcript WITHOUT
+      // the message the client believes was accepted — the client then cached
+      // that regressed copy over its own optimistic one.
+      try {
+        await runTurn(s, text, b.controls, b.attachments, b.agentId, clientMessageId, claim);
+      } catch (error) {
+        console.error(`[turn] Failed to start ${id}:`, error);
+        return json(res, 500, { error: "failed to start the turn" });
+      }
+      return json(res, 202, { ok: true });
     }
 
     // Continue a conversation with a different agent. Native threads can't
@@ -623,6 +847,13 @@ const server = http.createServer(async (req, res) => {
         publish(b.sessionId, ev);
         const answer = await waitPermission(id, 120000);
         untrackCard(b.sessionId, id);
+        // Persist the answered Q&A as a turn part — the live "Answered" record
+        // otherwise exists only in the DOM of whoever answered, and reopening
+        // the chat would show nothing.
+        if (answer && answer !== "deny") {
+          const live = activeTurns.get(b.sessionId);
+          if (live) live.push({ type: "qa", answer });
+        }
         const reason = !answer || answer === "deny"
           ? "The user did not answer the question in time. Make a reasonable assumption or ask again next turn."
           : `The user answered your question(s):\n${answer}\n\nUse these answers to continue — do not call AskUserQuestion again for this.`;
@@ -666,7 +897,14 @@ const server = http.createServer(async (req, res) => {
       publish(b.sessionId, ev);
       const answer = await waitPermission(id, 300000); // up to 5 min for the user to choose
       untrackCard(b.sessionId, id);
-      return json(res, 200, { answer: (!answer || answer === "deny") ? "" : answer });
+      const text = (!answer || answer === "deny") ? "" : answer;
+      // Persist the answered Q&A as a turn part (see the AskUserQuestion
+      // branch above) so revisiting the chat replays the "Answered" record.
+      if (text) {
+        const live = activeTurns.get(b.sessionId);
+        if (live) live.push({ type: "qa", answer: text });
+      }
+      return json(res, 200, { answer: text });
     }
 
     // permission answer from the phone. "allow_session" remembers the tool so the
@@ -717,6 +955,11 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(200, {
           "Content-Type": MIME[path.extname(f.path).toLowerCase()] || "application/octet-stream",
           "Content-Disposition": `${disp}; filename="${f.name}"`,
+          // Each token URL's content is frozen forever (a new upload = a new
+          // token), so let the browser cache hard: no re-download on every
+          // chat reopen / Files view / copy. `private` keeps tunnel proxies
+          // from caching these token-secret URLs.
+          "Cache-Control": "private, max-age=31536000, immutable",
         });
         return res.end(data);
       } catch { return notFound(res); }
@@ -737,7 +980,11 @@ const server = http.createServer(async (req, res) => {
       res.write(":" + " ".repeat(2048) + "\n\n");
       res.write(`data: ${JSON.stringify({ type: "_gateway", subtype: "connected" })}\n\n`);
       const unsub = subscribeAll(res);
-      const ping = setInterval(() => res.write(": ping\n\n"), 15000);
+      // A DATA ping, not an SSE comment: comments are invisible to the browser's
+      // EventSource API, so clients couldn't tell a silent dead socket (phone
+      // backgrounded, wifi→cellular) from a quiet stream. A data event resets
+      // the client's watchdog; both kinds keep proxies from idling the socket.
+      const ping = setInterval(() => res.write(`data: ${JSON.stringify({ type: "_gateway", subtype: "ping" })}\n\n`), 15000);
       req.on("close", () => { clearInterval(ping); unsub(); });
       return;
     }
@@ -753,6 +1000,7 @@ const server = http.createServer(async (req, res) => {
       publish(id, {
         type: "_gateway", subtype: "snapshot", client: (b && b.client) || "",
         parts: activeTurns.get(id) || [], busy: busy.has(id),
+        clientMessageId: activeClientMessageId(id),
         pending: [...(pendingCards.get(id)?.values() || [])],
       });
       return json(res, 200, { ok: true });
@@ -778,7 +1026,13 @@ const server = http.createServer(async (req, res) => {
       // synchronously before subscribing, so it always precedes new live events.
       const live = activeTurns.get(id);
       if (busy.has(id) || (live && live.length)) {
-        res.write(`data: ${JSON.stringify({ type: "_gateway", subtype: "snapshot", parts: live || [], busy: busy.has(id) })}\n\n`);
+        res.write(`data: ${JSON.stringify({
+          type: "_gateway",
+          subtype: "snapshot",
+          parts: live || [],
+          busy: busy.has(id),
+          clientMessageId: activeClientMessageId(id),
+        })}\n\n`);
       }
       // Replay any permission/question cards still awaiting an answer (they were
       // published live, but this subscriber may have missed them — a chat switch
@@ -821,6 +1075,11 @@ const server = http.createServer(async (req, res) => {
     json(res, 500, { error: String((e && e.message) || e) });
   }
 });
+
+// A previous run that died mid-turn left the streamed turn in a sidecar file —
+// fold it into its transcript (marked interrupted) before serving anything.
+const recoveredTurns = await sessionStore.recoverPendingTurns();
+if (recoveredTurns) console.log(`  Recovered ${recoveredTurns} interrupted turn(s) from the previous run.`);
 
 await Promise.all([commandsReady, modelsReady]); // discover Claude's real slash commands + latest model labels before serving the manifest
 

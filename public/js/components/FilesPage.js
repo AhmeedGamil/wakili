@@ -7,12 +7,25 @@
 
 import { el } from "./dom.js";
 import { icon } from "./icons.js";
-import { openImage, downloadFile } from "./media.js";
+import { openImage, downloadFile, shimmerLoad, attachMediaMenu } from "./media.js";
 
-export function createFilesPage() {
+// onDelete(file): remove the file from the gateway's registry (long-press →
+// Delete, behind media.js's confirmation dialog). Chat cards don't get it —
+// deleting belongs to this page only.
+export function createFilesPage({ onDelete } = {}) {
   let files = [];          // the global registry: [{ source, image, name, url }]
   let tab = "images";      // active tab: "images" | "files"
   let who = "all";         // source filter: "all" | "user" | "agent"
+  const deleting = new Set(); // tokens mid-delete: red indicator until the server confirms
+
+  // Wrap the delete so the item shows its in-progress state (red spinner) the
+  // moment it's confirmed, and clears it when the server answers either way.
+  async function startDelete(f) {
+    if (deleting.has(f.token)) return;
+    deleting.add(f.token);
+    draw();
+    try { await (onDelete && onDelete(f)); } finally { deleting.delete(f.token); draw(); }
+  }
 
   const imgBtn = el("button", { class: "ft-tab", type: "button", onClick: () => setTab("images") }, icon("image"), el("span", { text: "Images" }));
   const fileBtn = el("button", { class: "ft-tab", type: "button", onClick: () => setTab("files") }, icon("file-text"), el("span", { text: "Files" }));
@@ -53,13 +66,24 @@ export function createFilesPage() {
     if (tab === "images") {
       const grid = el("div", { class: "ft-grid" });
       for (const f of items) {
-        grid.appendChild(el("a", { class: "ft-imglink", title: f.name, onClick: () => openImage(f.url, f.name) },
-          el("img", { class: "ft-thumb", src: f.url, alt: f.name })));
+        const busy = deleting.has(f.token);
+        const img = el("img", { class: "ft-thumb", src: f.url, alt: f.name });
+        const link = el("a", { class: "ft-imglink", title: f.name, onClick: () => { if (!deleting.has(f.token)) openImage(f.url, f.name); } }, img);
+        if (busy) link.appendChild(el("div", { class: "ft-deleting" }, el("span", { class: "spinner-danger" }), el("span", { text: "Deleting…" })));
+        else attachMediaMenu(link, { url: f.url, name: f.name, image: true, onDelete: () => startDelete(f) });
+        grid.appendChild(shimmerLoad(link, img));
       }
       body.appendChild(grid);
     } else {
       for (const f of items) {
-        body.appendChild(el("a", { class: "ft-file", title: f.name, onClick: () => downloadFile(f.url, f.name) }, icon("download"), el("span", { text: f.name })));
+        const busy = deleting.has(f.token);
+        // Leading slot: the download glyph normally, the red delete spinner
+        // while the server removes the file.
+        const link = el("a", { class: "ft-file" + (busy ? " deleting" : ""), title: f.name, onClick: () => { if (!deleting.has(f.token)) downloadFile(f.url, f.name); } },
+          busy ? el("span", { class: "spinner-danger" }) : icon("download"),
+          el("span", { text: f.name }));
+        if (!busy) attachMediaMenu(link, { url: f.url, name: f.name, image: false, onDelete: () => startDelete(f) });
+        body.appendChild(link);
       }
     }
   }

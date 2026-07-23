@@ -15,6 +15,7 @@ export function getAgent(id) {
 }
 /** Public manifest the UI uses to render per-agent control panels + slash menu. */
 export function listAgents() {
+  for (const a of agents.values()) if (typeof a.refresh === "function") a.refresh(); // let adapters update stale controls (e.g. codex's model cache)
   return [...agents.values()].map((a) => ({
     id: a.id,
     label: a.label,

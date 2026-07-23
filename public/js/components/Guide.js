@@ -1,5 +1,4 @@
-// Guided tour. Shown automatically on the first visit (remembered in
-// localStorage) and replayable from Settings → Other. Dims the page and
+// Guided tour, launched from Settings → Other → Guidance. Dims the page and
 // spotlights one element at a time with a short explanation. Steps can carry a
 // `before` hook that navigates the UI first (open the settings panel, switch
 // its tab, …), so the tour walks through the real screens element by element.
@@ -8,13 +7,6 @@
 
 import { el } from "./dom.js";
 import { icon } from "./icons.js";
-
-const KEY = "ra-guide-done";
-
-export function maybeShowGuide(steps, opts) {
-  if (localStorage.getItem(KEY)) return;
-  showGuide(steps, opts);
-}
 
 export function showGuide(steps, { onEnd } = {}) {
   let i = -1;
@@ -88,7 +80,6 @@ export function showGuide(steps, { onEnd } = {}) {
 
   function end() {
     if (ro) { ro.disconnect(); ro = null; }
-    localStorage.setItem(KEY, "1");
     overlay.remove();
     document.body.classList.remove("nav-open");
     if (onEnd) onEnd();

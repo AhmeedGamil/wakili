@@ -9,11 +9,18 @@ import { config, ROOT } from "../config.mjs";
 // etag — see fetched_at/etag in the file), so we read it instead of hardcoding.
 // Only "list"-visibility entries are the models Codex offers users; hidden ones
 // (e.g. "Codex Auto Review") are skipped. `priority` gives the display order.
-// Falls back to a small static list if the cache is missing or unreadable. Read
-// once at startup — a server restart picks up any models Codex has since fetched.
-const CODEX_MODELS_CACHE = path.join(os.homedir(), ".codex", "models_cache.json");
+// Falls back to a small static list if the cache is missing or unreadable —
+// e.g. a fresh container volume where codex hasn't run yet — and retries on
+// each manifest request (see refreshModels) until the cache appears.
+// CODEX_HOME relocates codex's home dir (the Docker image points it at the
+// /data volume), so honor it before falling back to ~/.codex.
+const CODEX_DIR = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+const CODEX_MODELS_CACHE = path.join(CODEX_DIR, "models_cache.json");
 
 const FALLBACK_MODELS = [
+  { value: "gpt-5.6-sol", label: "GPT-5.6-Sol" },
+  { value: "gpt-5.6-terra", label: "GPT-5.6-Terra" },
+  { value: "gpt-5.6-luna", label: "GPT-5.6-Luna" },
   { value: "gpt-5.5", label: "GPT-5.5" },
   { value: "gpt-5.4", label: "GPT-5.4" },
   { value: "gpt-5.4-mini", label: "GPT-5.4-Mini" },
@@ -35,7 +42,23 @@ function loadCodexModels() {
   } catch { return null; }
 }
 
-const CODEX_MODELS = loadCodexModels() || FALLBACK_MODELS;
+let CODEX_MODELS = loadCodexModels() || FALLBACK_MODELS;
+let modelsFromCache = CODEX_MODELS !== FALLBACK_MODELS;
+
+// Called on every manifest request (see registry.listAgents): once the cache
+// file shows up — codex writes it on its first run, which on a fresh volume is
+// after the gateway booted — swap the fallback for the real list in place, so
+// the picker updates without a server restart.
+function refreshModels() {
+  if (modelsFromCache) return;
+  const loaded = loadCodexModels();
+  if (!loaded) return;
+  modelsFromCache = true;
+  CODEX_MODELS = loaded;
+  codexAgent.controls.model.options = loaded;
+  codexAgent.controls.model.default = loaded[0].value;
+  codexAgent.controls.effort.optionsFor = Object.fromEntries(loaded.map((m) => [m.value, effortOptions(effortCeiling(m.value))]));
+}
 
 // --- Reasoning effort ----------------------------------------------------------
 // Matches the Codex app's picker: every model takes low..xhigh, and the top-tier
@@ -84,7 +107,7 @@ function describePrompt(file) {
 
 function listCommands() {
   const out = new Map(); // project prompts override user prompts of the same name
-  for (const dir of [path.join(os.homedir(), ".codex", "prompts"), path.join(process.cwd(), ".codex", "prompts")]) {
+  for (const dir of [path.join(CODEX_DIR, "prompts"), path.join(process.cwd(), ".codex", "prompts")]) {
     let files;
     try { files = fs.readdirSync(dir, { recursive: true }); } catch { continue; }
     for (const rel of files) {
@@ -388,6 +411,9 @@ export const codexAgent = {
 
   // Discovered fresh each manifest request so newly added custom prompts appear.
   commands: listCommands,
+
+  // Re-check the model cache each manifest request while we're on the fallback.
+  refresh: refreshModels,
 
   controls: {
     model: {

@@ -43,7 +43,7 @@ export function createModelPicker({ onPickAgent, onPickModel, onControlChange, o
 
     // "Allow always" — a plain on/off switch (not an agent control; it governs the
     // gateway's permission cards). When on, incoming permissions auto-approve.
-    const knob = el("button", { class: "switch" + (autoAllow ? " on" : ""), type: "button", role: "switch", "aria-checked": autoAllow ? "true" : "false", tabindex: "-1" }, el("span", { class: "switch-dot" }));
+    const knob = el("button", { class: "switch" + (autoAllow ? " on" : ""), type: "button", role: "switch", "aria-checked": autoAllow ? "true" : "false", tabindex: "-1" }, el("span", { class: "sw-knob" }));
     const swRow = el("div", { class: "switch-row" }, el("span", { class: "switch-label", text: "Allow always" }), knob);
     // The whole row is the hit area — the knob alone is too small on phones.
     swRow.addEventListener("click", (e) => { e.stopPropagation(); onToggleAutoAllow(!autoAllow); });

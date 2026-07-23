@@ -8,11 +8,10 @@
 import { el } from "./dom.js";
 import { createTypewriter } from "../core/typewriter.js";
 import { renderMarkdown } from "../core/markdown.js";
-import { renderTool, attachOutput } from "./toolCard.js";
+import { toolCard, attachOutput } from "./toolCard.js";
 import { icon } from "./icons.js";
-import { openImage, downloadFile } from "./media.js";
-
-const MD_KEY = "ra-markdown"; // "1" = format markdown, "0" = raw text
+import { openImage, downloadFile, isImageName, shimmerLoad, attachMediaMenu } from "./media.js";
+import { KEYS, getPref, setPref } from "../core/prefs.js";
 
 export function createMessageList() {
   const root = el("div", { id: "messages", class: "messages" });
@@ -20,7 +19,7 @@ export function createMessageList() {
   // Whether message text is rendered as formatted Markdown or plain text. The
   // toggle lives in the sidebar; this is the shared source of truth, remembered
   // in localStorage (default on).
-  let mdOn = localStorage.getItem(MD_KEY) !== "0";
+  let mdOn = getPref(KEYS.markdown, "1") !== "0";
 
   // Write model/user text into a node, remembering the raw source on `__raw` so
   // flipping the toggle can re-render every existing message in place.
@@ -58,6 +57,11 @@ export function createMessageList() {
   // widget=resizes-content); a resize-triggered scroll made the whole chat jump
   // upward on focus. Leaving scrollTop where it is keeps the content anchored.
   // New messages and streaming still stick to the bottom via scroll() directly.
+  // Images in messages have no reserved height — one finishing its load AFTER
+  // a pin-to-bottom inflates the transcript and leaves the view sitting above
+  // the end. Re-pin while stuck ("load" doesn't bubble; capture catches every
+  // img inside the pane). No-op when the user scrolled away (stick false).
+  root.addEventListener("load", () => scroll(), true);
   const tw = createTypewriter(scroll);
   // Streaming text paints through the same writeText path, so live deltas are
   // formatted (or not) consistently with the stored history and re-render on toggle.
@@ -145,17 +149,39 @@ export function createMessageList() {
     if (card) awaiting.push({ card, id });
   }
 
+  // Keep chat media large (the normal 62%/300px cap), but reduce the width of
+  // tall portraits only enough to respect the 340px height cap. This width is
+  // applied to the image itself, so its visual and hit bounds stay identical.
+  function sizeChatImage(img) {
+    const apply = () => {
+      if (!img.naturalWidth || !img.naturalHeight) return;
+      img.style.setProperty("--chat-image-height-width", `${340 * img.naturalWidth / img.naturalHeight}px`);
+    };
+    if (img.complete) apply();
+    else img.addEventListener("load", apply, { once: true });
+  }
+
   // One sent attachment as its own right-aligned card: images show just the
   // picture (tap to open full size); other files show an icon + the name.
   function attachmentCard(a) {
-    const isImg = a.image || /\.(png|jpe?g|gif|webp|svg|bmp|heic)$/i.test(a.name || "");
+    const isImg = a.image || isImageName(a.name);
     const src = a.url || "";
     if (isImg && src) {
-      return el("div", { class: "msg user" },
-        el("a", { class: "att-msg img", onClick: () => openImage(src, a.name) }, el("img", { src, alt: a.name || "image" })));
+      // The image itself owns the tap/hold target, so portrait media cannot
+      // leave clickable empty space inside a wider sizing wrapper.
+      const img = el("img", { class: "att-msg img chat-image", src, alt: "", role: "button", tabindex: "0",
+        onClick: () => openImage(src, a.name),
+        onKeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openImage(src, a.name); } } });
+      sizeChatImage(img);
+      attachMediaMenu(img, { url: src, name: a.name, image: true }); // hold: Save / Copy
+      const frame = el("span", { class: "chat-image-frame" }, img);
+      return el("div", { class: "msg user" }, shimmerLoad(frame, img));
     }
     const card = el("div", { class: "att-msg doc" }, icon("paperclip"), el("span", { class: "att-msg-name", text: a.name || "file" }));
-    return el("div", { class: "msg user" }, src ? el("a", { class: "att-msg-link", onClick: () => downloadFile(src, a.name) }, card) : card);
+    if (!src) return el("div", { class: "msg user" }, card);
+    const link = el("a", { class: "att-msg-link", onClick: () => downloadFile(src, a.name) }, card);
+    attachMediaMenu(link, { url: src, name: a.name, image: false }); // hold: Save / Copy
+    return el("div", { class: "msg user" }, link);
   }
 
   // Accepts a plain string (text only) or { text, attachments }. Attachments
@@ -211,13 +237,25 @@ export function createMessageList() {
 
   // static renderers for stored history parts
   function staticTool(name, input, output, isError) {
-    const node = el("div", { class: "msg assistant" }, renderTool(name, input, { output, isError }));
+    const node = el("div", { class: "msg assistant" }, toolCard(name, input, { output, isError }));
     append(node);
     return node;
   }
   function staticThink(text) {
     append(el("details", { class: "thoughts" }, el("summary", {}, icon("bulb"), el("span", { text: "Thoughts" })), writeText(el("div", { class: "think-body" }), text)));
   }
+  // History replay of an answered question: the same compact "Answered" record
+  // the dock drops into the live chat (same classes, same shape), rebuilt from
+  // the qa part the gateway persists when the answer lands.
+  function staticQA(p) {
+    const rec = el("div", { class: "msg ask decided allowed" },
+      el("div", { class: "perm-head" }, icon("check"), el("span", { text: "Answered" })));
+    for (const line of String(p.answer || "").split("\n")) {
+      if (line.trim()) rec.appendChild(el("div", { class: "ask-q", text: line }));
+    }
+    append(rec);
+  }
+
   // History replay of an agent-sent file. When the stored part carries a url
   // (new sends do), render it just like the live addFile: a thumbnail for images,
   // a download link otherwise. Older parts without a url fall back to a name card.
@@ -237,6 +275,7 @@ export function createMessageList() {
       }
       else if (p.type === "thinking") staticThink(p.text);
       else if (p.type === "file") staticFile(p);
+      else if (p.type === "qa") staticQA(p);
     }
   }
 
@@ -284,23 +323,30 @@ export function createMessageList() {
     uEnd = units.length;
     uStart = Math.max(0, uEnd - WINDOW);
     spans = [];
-    topSpacer = el("div", { class: "vspace" });
-    root.appendChild(topSpacer);
-    for (const u of units.slice(uStart)) spans.push(renderUnit(u));
-    bottomSpacer = el("div", { class: "vspace" });
-    root.appendChild(bottomSpacer);
+    topSpacer = bottomSpacer = null;
+    topH = bottomH = 0;
+    // Spacers only when there IS history: an empty chat must leave #messages
+    // with no element children (comments don't count) so the CSS :empty
+    // greeting ("What can I help with?") still shows.
+    if (units.length) {
+      topSpacer = el("div", { class: "vspace" });
+      root.appendChild(topSpacer);
+      for (const u of units.slice(uStart)) spans.push(renderUnit(u));
+      bottomSpacer = el("div", { class: "vspace" });
+      root.appendChild(bottomSpacer);
+      // Seed the average unit height from what just mounted, then size the top
+      // spacer to stand in for everything older.
+      if (spans.length) {
+        const h = bottomSpacer.getBoundingClientRect().top - topSpacer.getBoundingClientRect().bottom;
+        if (h > 0) { avgH = h / spans.length; measured = spans.length; }
+      }
+      setSpacers(uStart * avgH, 0);
+      scroll(); // the spacer grew scrollHeight — re-pin the stick-to-bottom view
+    }
     // History/live boundary marker: chunk loads insert before it; outbox rows
     // and live content append after it (append() targets the root's end).
     histEnd = document.createComment("hist-end");
     root.appendChild(histEnd);
-    // Seed the average unit height from what just mounted, then size the top
-    // spacer to stand in for everything older.
-    if (spans.length) {
-      const h = bottomSpacer.getBoundingClientRect().top - topSpacer.getBoundingClientRect().bottom;
-      if (h > 0) { avgH = h / spans.length; measured = spans.length; }
-    }
-    setSpacers(uStart * avgH, 0);
-    scroll(); // the spacer grew scrollHeight — re-pin the stick-to-bottom view
     markLive();
   }
 
@@ -370,13 +416,13 @@ export function createMessageList() {
     setSpacers(uStart * avgH, 0);
   }
 
-  // ---- anchor-based position save/restore (session switching) ----
-  // The saved position is CONTENT IDENTITY — the first visible unit's index
-  // and its exact pixel offset from the viewport top — never a raw scrollTop.
-  // A pixel value would have to be mapped through the spacers' height
-  // estimates (approximate, and meaningless after a re-wrap); the anchor is
-  // exact by construction. Units flatten deterministically from append-only
-  // messages, so an old unit's index never shifts between visits.
+  // ---- anchor-based position keep (same-session re-renders) ----
+  // Used only to hold the current reading position across a re-render of the
+  // session already on screen (the fresh fetch reconciling over the cached
+  // render) — opening or switching chats always lands at the bottom. The
+  // anchor is CONTENT IDENTITY — the first visible unit's index and its exact
+  // pixel offset from the viewport top — never a raw scrollTop, which would
+  // have to be mapped through the spacers' approximate height estimates.
   function getAnchor() {
     if (stick || !spans.length) return { bottom: true }; // was at the latest — return there
     const rootTop = root.getBoundingClientRect().top;
@@ -409,9 +455,14 @@ export function createMessageList() {
     // One scroll write at a safe moment (no gesture can be mid-flight during a
     // session switch): put the anchor node exactly back at its saved offset.
     const node = firstNodeFrom(idx - uStart);
-    if (node === bottomSpacer) { root.scrollTop = root.scrollHeight; return; }
+    if (node === bottomSpacer) { stick = true; root.scrollTop = root.scrollHeight; return; }
     const rootTop = root.getBoundingClientRect().top;
     root.scrollTop += (node.getBoundingClientRect().top - rootTop) - (a.offset || 0);
+    // Recompute stick from the restored geometry NOW: the scroll listener only
+    // runs async, so at this point it still holds the previous session's value.
+    // A snapshot render or streaming delta in this same task would read that
+    // stale stick=true and yank the just-restored position back to the bottom.
+    stick = root.scrollHeight - root.scrollTop - root.clientHeight <= STICK_THRESHOLD;
   }
 
   // Full-pane states for a session with nothing renderable yet: a centered
@@ -527,7 +578,7 @@ export function createMessageList() {
   }
 
   function addTool(tool) {
-    const node = el("div", { class: "msg assistant" }, renderTool(tool.name, tool.input));
+    const node = el("div", { class: "msg assistant" }, toolCard(tool.name, tool.input));
     registerToolCard(node, tool.id);
     segment(node);
   }
@@ -550,17 +601,26 @@ export function createMessageList() {
   // output can still attach.
   function addRecord(node) { registerToolCard(node); segment(node); }
 
-  // Build an agent-sent file node: a thumbnail for images (tap to open full
-  // size), a download link otherwise. Shared by the live path (addFile) and
-  // history replay (staticFile) so both render identically.
+  // Agent images render as standalone media; other files keep the compact
+  // download card. Live sends and history replay share this exact path.
   function fileCard(file) {
+    // Deliberately narrower than isImageName: these render from a URL in an
+    // <img>, so only formats every engine can display inline count as images
+    // (a .heic would show as a broken thumbnail instead of a download link).
     const isImg = /\.(png|jpe?g|gif|webp|svg)$/i.test(file.name);
-    const card = el("div", { class: "file-card" });
     if (isImg) {
-      card.appendChild(el("a", { class: "file-img-link", onClick: () => openImage(file.url, file.name) }, el("img", { class: "file-img", src: file.url, alt: file.name })));
-    } else {
-      card.appendChild(el("a", { class: "file-link", onClick: () => downloadFile(file.url, file.name) }, icon("download"), el("span", { class: "file-name", text: file.name })));
+      const img = el("img", { class: "file-img chat-image", src: file.url, alt: "", role: "button", tabindex: "0",
+        onClick: () => openImage(file.url, file.name),
+        onKeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openImage(file.url, file.name); } } });
+      sizeChatImage(img);
+      attachMediaMenu(img, { url: file.url, name: file.name, image: true }); // hold: Save / Copy
+      const frame = el("span", { class: "chat-image-frame" }, img);
+      return el("div", { class: "msg assistant" }, shimmerLoad(frame, img));
     }
+    const card = el("div", { class: "file-card" });
+    const link = el("a", { class: "file-link", onClick: () => downloadFile(file.url, file.name) }, icon("download"), el("span", { class: "file-name", text: file.name }));
+    attachMediaMenu(link, { url: file.url, name: file.name, image: false }); // hold: Save / Copy
+    card.appendChild(link);
     if (file.caption) card.appendChild(el("div", { class: "file-cap", text: file.caption, title: file.caption }));
     return el("div", { class: "msg assistant" }, card);
   }
@@ -582,7 +642,7 @@ export function createMessageList() {
   // from its stored raw source (`__raw`), including any mid-stream text.
   function setMarkdown(on) {
     mdOn = !!on;
-    localStorage.setItem(MD_KEY, mdOn ? "1" : "0");
+    setPref(KEYS.markdown, mdOn ? "1" : "0");
     root.querySelectorAll(".bubble, .text, .think-body").forEach((n) => {
       if (n.__raw != null) writeText(n, n.__raw);
     });
@@ -599,5 +659,7 @@ export function createMessageList() {
     scroll();
   }
 
-  return { el: root, userMessage, addOutbox, renderHistory, getAnchor, restoreAnchor, showLoading, showError, renderSnapshot, markLive, startAssistant, feedText, feedThink, addTool, addToolResult, addRecord, endTurn, addStopped, addFile, addExec, setMarkdown };
+  // repin: outside layout changed under the pane (e.g. the dock grew) — jump
+  // back to the end if the view is stuck to the bottom, else do nothing.
+  return { el: root, userMessage, addOutbox, renderHistory, getAnchor, restoreAnchor, showLoading, showError, renderSnapshot, markLive, startAssistant, feedText, feedThink, addTool, addToolResult, addRecord, endTurn, addStopped, addFile, addExec, setMarkdown, repin: () => scroll() };
 }
