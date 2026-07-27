@@ -379,5 +379,15 @@ async function boot() {
   if (!api.hasToken()) return showGate();
   try { await controller.init(); }
   catch (e) { if (String(e.message || e).includes("unauthorized")) showGate(); else throw e; }
+  // Show the connected computer's NAME (its endpoint label) under the logo,
+  // instead of the raw host:port. Best-effort — the host:port stays if it fails.
+  api.endpoints().then((eps) => {
+    const here = location.host;
+    const cur = (eps || []).find((ep) => {
+      let h = ep.host; try { h = h || new URL(ep.url).host; } catch { /* keep */ }
+      return h === here;
+    });
+    if (cur && cur.label) sidebar.setHost(cur.label);
+  }).catch(() => { /* keep host:port */ });
 }
 boot();

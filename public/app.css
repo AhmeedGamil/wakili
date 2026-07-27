@@ -239,7 +239,7 @@ body {
 /* agent tabs — the home page's top-level choice. Which agent you're talking to
    is decided HERE (new chats use it, the list filters by it); the chat page
    has no agent picker. Hidden when only one agent is registered. */
-.agent-tabs { display: flex; gap: 4px; margin: 2px 15px 10px; padding: 3px; background: var(--panel-2); border-radius: 12px; overflow-x: auto; scrollbar-width: none; }
+.agent-tabs { display: flex; gap: 4px; margin: 2px 8px 10px; padding: 3px; background: var(--panel-2); border-radius: 12px; overflow-x: auto; scrollbar-width: none; }
 .agent-tabs::-webkit-scrollbar { display: none; }
 .agent-tabs[hidden] { display: none; }
 /* grow to fill when they fit; keep their label and scroll when they don't */

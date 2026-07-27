@@ -163,7 +163,10 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
   // opens the connection switcher. One connection-state source feeds this dot,
   // the chat chip's dot, and the floating banner.
   const hostDot = el("span", { class: "conn-dot" });
+  // The connected computer's NAME (the current endpoint's label), set once the
+  // endpoints load; the raw host:port only until then.
   const hostName = el("span", { class: "side-host-name", text: location.host });
+  const setHost = (name) => { if (name) hostName.textContent = name; };
   const hostRow = el("button", { class: "side-host", type: "button", title: "Switch connection", onClick: () => onOpenConnect && onOpenConnect() }, hostDot, hostName);
 
   // The floating brand: [logo Wakili …… ☰] over the host row.
@@ -382,5 +385,5 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
   // through the real close paths so the backdrop goes away with the menu.
   const menusOpen = () => !ctx.hidden || !pop.hidden || !menu.hidden;
   const closeMenus = () => { if (!ctx.hidden) closeCtx(); else if (!pop.hidden) closePop(); else closeMenu(); };
-  return { el: root, render, menusOpen, closeMenus, currentAgent: () => tabAgent };
+  return { el: root, render, menusOpen, closeMenus, setHost, currentAgent: () => tabAgent };
 }
