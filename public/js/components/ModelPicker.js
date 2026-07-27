@@ -1,11 +1,14 @@
 // One picker. Closed, it shows the current model (e.g. "GPT-5.5"). Open, it's a
-// stack of modern dropdowns: Agent, Model (for that agent), then the agent's
-// other settings. Switching agent just updates the Model dropdown in place.
+// stack of modern dropdowns: Model, then the agent's other settings. The AGENT
+// is not here — it's chosen on the home page and fixed per chat. What remains
+// is "Continue with <other agent>" at the bottom: the handoff flow, which
+// exports this chat's transcript into a NEW chat for that agent.
 
 import { el, dismissFirst, backdropFor } from "./dom.js";
+import { icon } from "./icons.js";
 import { createDropdown } from "./Dropdown.js";
 
-export function createModelPicker({ onPickAgent, onPickModel, onControlChange, onToggleAutoAllow }) {
+export function createModelPicker({ onSwitchAgent, onPickModel, onControlChange, onToggleAutoAllow }) {
   const current = el("span", { class: "pick-current", text: "Model" });
   const trigger = el("button", { class: "picker-trigger", type: "button" }, current, el("span", { class: "pick-caret", text: "▾" }));
   const pop = el("div", { class: "picker-pop", hidden: "" });
@@ -31,7 +34,6 @@ export function createModelPicker({ onPickAgent, onPickModel, onControlChange, o
       pop.appendChild(dd.el);
     };
 
-    mk({ label: "Agent", options: agents.map((a) => ({ value: a.id, label: a.label, description: a.description })), value: agentId, onChange: (v) => onPickAgent(v) });
     mk({ label: "Model", options: modelOpts, value: controls.model, onChange: (v) => onPickModel(agentId, v) });
     for (const [key, c] of Object.entries(agent?.controls || {})) {
       if (key === "model") continue;
@@ -48,6 +50,16 @@ export function createModelPicker({ onPickAgent, onPickModel, onControlChange, o
     // The whole row is the hit area — the knob alone is too small on phones.
     swRow.addEventListener("click", (e) => { e.stopPropagation(); onToggleAutoAllow(!autoAllow); });
     pop.appendChild(swRow);
+
+    // Handoff: this chat's agent is fixed, but the conversation can move — a
+    // new chat for the other agent with the exported transcript attached.
+    for (const a of agents) {
+      if (a.id === agentId) continue;
+      pop.appendChild(el("button", {
+        class: "picker-handoff", type: "button",
+        onClick: () => { setOpen(false); onSwitchAgent(a.id); },
+      }, el("span", { text: `Continue with ${a.label}` }), icon("arrow-up-right")));
+    }
   }
 
   return { el: root, render, open: () => setOpen(true), close: () => setOpen(false), isOpen: () => open };

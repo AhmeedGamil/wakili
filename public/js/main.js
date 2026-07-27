@@ -25,9 +25,10 @@ import { createComposer } from "./components/Composer.js";
 import { initDrawerSwipe } from "./components/drawerSwipe.js";
 import { showGuide } from "./components/Guide.js";
 import { createGuideSteps } from "./components/guideSteps.js";
+import { createConnectionBanner } from "./components/ConnectionBanner.js";
 
 // autoAllow is per-session; applySession loads the active session's value.
-const store = createStore({ sessions: [], sessionsState: "loading", activeId: null, activeSession: null, agents: [], agentId: "claude", controls: {}, busyIds: {}, queued: {}, unreadIds: {}, autoAllow: false, files: { received: [], uploaded: [] }, allFiles: [], power: { platform: "", keepAwake: false }, autostart: { supported: false, on: false } });
+const store = createStore({ sessions: [], sessionsState: "loading", activeId: null, activeSession: null, agents: [], agentId: "claude", controls: {}, busyIds: {}, queued: {}, unreadIds: {}, autoAllow: false, connected: true, files: { received: [], uploaded: [] }, allFiles: [], power: { platform: "", keepAwake: false }, autostart: { supported: false, on: false } });
 const emitter = createEmitter();
 const controller = createChatController({ api, store, emitter });
 
@@ -38,24 +39,29 @@ function newChatWithPicker() {
   // Keep the sidebar where it is; it only closes once a folder is actually
   // picked and the new chat opens (cancelling leaves everything untouched).
   const start = store.get().activeSession?.effectiveCwd || "";
-  folderPicker.open((cwd) => { document.body.classList.remove("nav-open"); controller.newSession(cwd); }, start);
+  folderPicker.open((cwd) => { document.body.classList.remove("nav-open"); controller.newSession(cwd, sidebar.currentAgent()); }, start);
 }
+// New chats are born under the home page's selected agent tab — the chat page
+// itself has no agent picker anymore.
 const sidebar = createSidebar({
   onNew: newChatWithPicker,
   // Header +: new chat in the last selected project (the open chat's folder),
   // skipping the picker. With nothing open it lands in the default project.
-  onNewLast: () => { document.body.classList.remove("nav-open"); controller.newSession(store.get().activeSession?.effectiveCwd || null); },
-  onNewInFolder: (cwd) => { document.body.classList.remove("nav-open"); controller.newSession(cwd); },
+  onNewLast: () => { document.body.classList.remove("nav-open"); controller.newSession(store.get().activeSession?.effectiveCwd || null, sidebar.currentAgent()); },
+  onNewInFolder: (cwd) => { document.body.classList.remove("nav-open"); controller.newSession(cwd, sidebar.currentAgent()); },
   onSelect: (id) => { document.body.classList.remove("nav-open"); controller.openSession(id); },
   onDelete: (id) => controller.deleteSession(id),
   onRename: (id, title) => controller.renameSession(id, title),
   onOpenFiles: () => filesPage.open(),
   onAppearance: () => appearanceMenu.open(),
+  onOpenConnect: () => appearanceMenu.openTab("connection"),
   onRetrySessions: () => { store.set({ sessionsState: "loading" }); controller.refreshSessions(); },
 });
 const topbar = createTopbar({ onMenu: () => document.body.classList.toggle("nav-open") });
 const picker = createModelPicker({
-  onPickAgent: (id) => controller.setAgent(id),
+  // "Continue with X": the handoff flow — a NEW chat for that agent with the
+  // exported transcript attached (setAgent routes there on a non-empty chat).
+  onSwitchAgent: (id) => controller.setAgent(id),
   onPickModel: (agentId, model) => controller.pickModel(agentId, model),
   onControlChange: (key, value) => controller.setControl(key, value),
   onToggleAutoAllow: (v) => controller.setAutoAllow(v),
@@ -133,7 +139,9 @@ const composer = createComposer({
 
 const backdrop = el("div", { id: "backdrop", onClick: () => document.body.classList.remove("nav-open") });
 const main = el("main", { id: "main" }, topbar.el, messageList.el, dock.el, composer.el);
-document.getElementById("app").append(sidebar.el, main, backdrop);
+// One floating connection banner over every screen — mounted at the app root.
+const connBanner = createConnectionBanner();
+document.getElementById("app").append(sidebar.el, main, backdrop, connBanner.el);
 
 // The dock (permission/question cards) sits between the transcript and the
 // composer: a card appearing AFTER the transcript pinned to the bottom shrinks
@@ -202,9 +210,10 @@ const backLayers = [
   { isOpen: () => terminalPage.menuOpen(), close: () => terminalPage.closeMenu() },
   { isOpen: () => !!terminalPage.el && !terminalPage.el.hasAttribute("hidden"), close: () => terminalPage.close() },
   { isOpen: () => appearanceMenu.isOpen(), close: () => appearanceMenu.close() },
-  // The sidebar drawer, sitting under any of the above.
-  { isOpen: () => document.body.classList.contains("nav-open"),
-    close: () => document.body.classList.remove("nav-open") },
+  // Page navigation, under all of the above: back in a chat returns to the
+  // home page; back on the home page falls through to the shell (app exits).
+  { isOpen: () => !document.body.classList.contains("nav-open"),
+    close: () => document.body.classList.add("nav-open") },
 ];
 window.__wakiliBack = () => {
   for (const layer of backLayers) {
@@ -332,7 +341,9 @@ store.subscribe((s) => {
     uiSid = s.activeId;
     composer.setState(uiState.get(uiSid));
   }
-  sidebar.render({ sessions: s.sessions, activeId: s.activeId, busyIds: s.busyIds, files: s.allFiles, unreadIds: s.unreadIds, agents: s.agents, power: s.power, sessionsState: s.sessionsState });
+  sidebar.render({ sessions: s.sessions, activeId: s.activeId, busyIds: s.busyIds, files: s.allFiles, unreadIds: s.unreadIds, agents: s.agents, power: s.power, sessionsState: s.sessionsState, connected: s.connected });
+  topbar.setConnected(s.connected);
+  connBanner.set(s.connected);
   filesPage.render(s.allFiles);
   composer.setBusy(!!s.busyIds[s.activeId]);   // only the active session's busy gates the composer
   composer.setQueued(s.queued[s.activeId]);    // its pending (queued) message, if any
@@ -362,6 +373,9 @@ function showGate() {
 async function boot() {
   applyTheme(getPref(KEYS.theme) || "dark");
   applyAccent(getPref(KEYS.accent)); // restore saved accent (empty = theme default)
+  // The app opens on the HOME page (agent tabs + chats). init() still preloads
+  // the newest chat behind it, so tapping a session lands instantly.
+  document.body.classList.add("nav-open");
   if (!api.hasToken()) return showGate();
   try { await controller.init(); }
   catch (e) { if (String(e.message || e).includes("unauthorized")) showGate(); else throw e; }

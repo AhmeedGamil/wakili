@@ -1,7 +1,10 @@
-// Sidebar: a floating brand (logo + name) over one scrolling column — the
-// "New chat" split button (tap = last project, folder half = pick a project),
-// the Files row, then a "Sessions" header with a filter menu and the session
-// list; Settings sits alone in a pinned footer under the scroll. Pulling the
+// Sidebar — on phones this is the HOME PAGE (the app opens here, full-width;
+// opening a chat slides it away). A floating brand (logo + name) over one
+// scrolling column — the agent tabs (Claude / Codex…) that pick which agent
+// new chats use AND filter the session list, the "New chat" split button
+// (tap = last project, folder half = pick a project), the Files row, then a
+// "Sessions" header with a filter menu and the session list; Settings sits
+// alone in a pinned footer under the scroll. Pulling the
 // column down from the top reveals a refresh chip under the brand
 // (pull-to-refresh). The session list renders one of two ways, picked in the
 // filter popover and remembered in localStorage:
@@ -17,14 +20,31 @@ import { el, dismissFirst, backdropFor } from "./dom.js";
 import { icon } from "./icons.js";
 import { KEYS, getPref, setPref, getJSON, setJSON, putSession } from "../core/prefs.js";
 
-export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDelete, onRename, onOpenFiles, onAppearance, onRetrySessions }) {
+export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDelete, onRename, onOpenFiles, onAppearance, onOpenConnect, onRetrySessions }) {
   let view = getPref(KEYS.sessionView) === "all" ? "all" : "project";
   let showModel = getPref(KEYS.sessionModel) === "1";
+  let tabAgent = getPref(KEYS.homeAgent) || "claude"; // the selected agent tab — new chats use it, the list filters by it
   let last = { sessions: [], activeId: null, busyIds: {}, unreadIds: {}, agents: [], sessionsState: "loading" }; // cached for re-render on toggle
 
-  const filesBtn = el("button", { class: "side-files-btn", type: "button", onClick: onOpenFiles },
-    el("span", { class: "sf-left" }, icon("file-text"), el("span", { text: "Files" })),
-    el("span", { class: "side-files-count", text: "0" }));
+  // Agent tabs: the agent is chosen HERE, on the home page — the chat page
+  // never shows an agent picker. Segmented buttons from the agents manifest;
+  // the choice persists and also filters the session list below.
+  const tabs = el("div", { class: "agent-tabs" });
+  tabs.hidden = true;
+  function renderTabs() {
+    const agents = last.agents;
+    tabs.hidden = agents.length < 2;
+    if (tabs.hidden) return;
+    if (!agents.some((a) => a.id === tabAgent)) tabAgent = agents[0].id;
+    tabs.innerHTML = "";
+    for (const a of agents) {
+      tabs.appendChild(el("button", {
+        class: a.id === tabAgent ? "on" : "", type: "button", text: a.label,
+        onClick: () => { if (a.id === tabAgent) return; tabAgent = a.id; setPref(KEYS.homeAgent, tabAgent); renderTabs(); renderSessions(); },
+      }));
+    }
+  }
+
 
   // "Sessions" header: title + a filter button whose popover picks how the
   // list is grouped (by project / one flat list) and what each row shows.
@@ -55,11 +75,8 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
   // "New chat": THE primary action, so it sits first and reads accent. A split
   // button — the wide half starts a chat in the last selected project (no
   // picker), the folder half opens the picker for "somewhere else".
-  const newBtn = el("div", { class: "side-new" },
-    el("button", { class: "side-new-main", type: "button", onClick: onNewLast },
-      icon("plus"), el("span", { text: "New chat" })),
-    el("button", { class: "side-new-pick", type: "button", title: "New chat in a project…", onClick: onNew },
-      icon("folder")));
+  const newBtn = el("button", { class: "side-new side-new-solo", type: "button", onClick: onNewLast },
+    icon("plus"), el("span", { text: "New chat" }));
 
   // Long-press (touch) or right-click menu on a session row: Rename / Delete.
   // Delete opens a centered confirmation dialog. The menu is attached to <body>
@@ -125,17 +142,42 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
     finally { deletingIds.delete(s.id); renderSessions(); }
   }
   dismissFirst(() => !ctx.hidden, (t) => ctx.contains(t), closeCtx);
-  // Settings (connection, device, theme, accent, formatting) live in a page
-  // opened by this button — pinned in a footer under the scroll, out of the
-  // content's way, like every settings gear ends up.
-  const settingsBtn = el("button", { class: "side-files-btn", type: "button", onClick: () => onAppearance && onAppearance() },
-    el("span", { class: "sf-left" }, icon("settings"), el("span", { text: "Settings" })));
-  const foot = el("div", { class: "side-foot" }, settingsBtn);
+  // Select project / Files / Settings are collapsed into the ☰ menu in the
+  // brand row (New chat is the one action kept out, below). One popover recipe
+  // (.sess-pop), dropped under the ☰ button, dismissed via its own backdrop.
+  const brandFilesCount = el("span", { class: "side-files-count", text: "0" });
+  const menu = el("div", { class: "sess-pop side-menu" },
+    el("button", { type: "button", onClick: () => { closeMenu(); onNew && onNew(); } },
+      icon("folder"), el("span", { class: "sess-opt", text: "Select project" })),
+    el("button", { type: "button", onClick: () => { closeMenu(); onOpenFiles && onOpenFiles(); } },
+      icon("file-text"), el("span", { class: "sess-opt", text: "Files" }), brandFilesCount),
+    el("button", { type: "button", onClick: () => { closeMenu(); onAppearance && onAppearance(); } },
+      icon("settings"), el("span", { class: "sess-opt", text: "Settings" })));
+  menu.hidden = true;
+  const menuBd = backdropFor(menu, () => closeMenu());
+  function openMenu() { menu.hidden = false; menuBd.show(); }
+  function closeMenu() { menu.hidden = true; menuBd.hide(); }
+  const menuBtn = el("button", { class: "brand-menu", type: "button", title: "Menu", onClick: () => { menu.hidden ? openMenu() : closeMenu(); } }, icon("menu"));
+
+  // ● host — the connected computer + live/down dot, under the logo; tapping it
+  // opens the connection switcher. One connection-state source feeds this dot,
+  // the chat chip's dot, and the floating banner.
+  const hostDot = el("span", { class: "conn-dot" });
+  const hostName = el("span", { class: "side-host-name", text: location.host });
+  const hostRow = el("button", { class: "side-host", type: "button", title: "Switch connection", onClick: () => onOpenConnect && onOpenConnect() }, hostDot, hostName);
+
+  // The floating brand: [logo Wakili …… ☰] over the host row.
+  const brand = el("div", { class: "side-brand" },
+    el("div", { class: "brand-row" },
+      el("span", { class: "brand-logo", "aria-hidden": "true" }),
+      el("span", { class: "brand-name", text: "Wakili" }),
+      el("div", { class: "brand-menu-wrap" }, menuBtn, menu)),
+    hostRow);
+  dismissFirst(() => !menu.hidden, (t) => brand.contains(t), closeMenu);
 
   // Everything below the brand scrolls as one column; the brand floats over it
   // (absolute, with a fade — see .side-brand) so content slides out under it.
-  // A hairline under Files separates the action rows from the sessions area.
-  const scroll = el("div", { class: "side-scroll" }, newBtn, filesBtn, el("div", { class: "side-sep" }), sessHead, list);
+  const scroll = el("div", { class: "side-scroll" }, tabs, newBtn, el("div", { class: "side-sep" }), sessHead, list);
 
   // Pull-to-refresh (replaces the old refresh button): dragging the
   // scrolled-to-top sidebar down slides a spinner chip out from under the
@@ -171,12 +213,9 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
   scroll.addEventListener("touchcancel", endPull);
 
   const root = el("aside", { id: "sidebar" },
-    el("div", { class: "side-brand" },
-      el("span", { class: "brand-logo", "aria-hidden": "true" }),
-      el("span", { class: "brand-name", text: "Wakili" })),
+    brand,
     pull,
     scroll,
-    foot,
   );
 
   function setView(v) {
@@ -191,9 +230,11 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
     modelItem.classList.toggle("on", showModel);
   }
 
-  function render({ sessions, activeId, busyIds = {}, files = [], unreadIds = {}, agents = [], sessionsState = "ready" }) {
+  function render({ sessions, activeId, busyIds = {}, files = [], unreadIds = {}, agents = [], sessionsState = "ready", connected = true }) {
     last = { sessions: sessions || [], activeId, busyIds, unreadIds, agents: agents || [], sessionsState };
-    filesBtn.querySelector(".side-files-count").textContent = String(files.length);
+    brandFilesCount.textContent = String(files.length);
+    hostDot.classList.toggle("off", !connected);
+    renderTabs();
     renderToggle();
     renderSessions();
   }
@@ -247,19 +288,31 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
   }
 
   function renderSessions() {
-    const { sessions, activeId, busyIds, unreadIds, sessionsState } = last;
+    const { activeId, busyIds, unreadIds, sessionsState } = last;
+    // Only the selected agent's chats — the tab is the top of the hierarchy.
+    // Sessions from before agents were recorded count as Claude's.
+    const sessions = tabs.hidden ? last.sessions
+      : last.sessions.filter((s) => (s.agentId || "claude") === tabAgent);
     list.innerHTML = "";
     // Before the first successful list load there are no rows to show — say
     // what's happening (spinner) or what went wrong (note + retry) instead of
     // presenting an empty list that reads as "no chats".
-    if (!sessions.length && sessionsState === "loading") {
+    if (!last.sessions.length && sessionsState === "loading") {
       list.appendChild(el("div", { class: "sess-note" }, el("span", { class: "spinner" })));
       return;
     }
-    if (!sessions.length && sessionsState === "error") {
+    if (!last.sessions.length && sessionsState === "error") {
       list.appendChild(el("div", { class: "sess-note" },
         el("span", { text: "Can't load sessions — check the connection." }),
         el("button", { class: "btn", type: "button", onClick: () => onRetrySessions && onRetrySessions() }, "Try again")));
+      return;
+    }
+    // The list loaded but this agent has nothing yet — point at New chat
+    // instead of showing a blank pane under the tabs.
+    if (!sessions.length) {
+      const label = last.agents.find((a) => a.id === tabAgent)?.label || "";
+      list.appendChild(el("div", { class: "sess-note" },
+        el("span", { text: `No ${label} chats yet — start one with New chat.` })));
       return;
     }
     if (view === "all") {
@@ -327,7 +380,7 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
   // Native back button: the filter popover and the long-press context menu are
   // transient layers — report whether one is open and close it (top-most first)
   // through the real close paths so the backdrop goes away with the menu.
-  const menusOpen = () => !ctx.hidden || !pop.hidden;
-  const closeMenus = () => { if (!ctx.hidden) closeCtx(); else closePop(); };
-  return { el: root, render, menusOpen, closeMenus };
+  const menusOpen = () => !ctx.hidden || !pop.hidden || !menu.hidden;
+  const closeMenus = () => { if (!ctx.hidden) closeCtx(); else if (!pop.hidden) closePop(); else closeMenu(); };
+  return { el: root, render, menusOpen, closeMenus, currentAgent: () => tabAgent };
 }

@@ -79,14 +79,35 @@ body {
    #topbar — so rows slide out from underneath it */
 .side-brand {
   position: absolute; top: 0; left: 0; right: 0; z-index: 4;
-  display: flex; align-items: center; gap: 10px; padding: 14px 15px 24px;
+  display: flex; flex-direction: column; gap: 4px; padding: 12px 12px 24px;
   pointer-events: none;
-  background: linear-gradient(to bottom, var(--bg) 0%, var(--bg) 30%, transparent 100%);
+  background: linear-gradient(to bottom, var(--bg) 0%, var(--bg) 42%, transparent 100%);
 }
+/* logo Wakili …… ☰ */
+.brand-row { display: flex; align-items: center; gap: 10px; padding: 0 3px; }
+.brand-row .brand-name { flex: 1; }
+/* interactive bits of the (pass-through) brand take clicks back */
+.brand-menu-wrap, .side-host { pointer-events: auto; }
+.brand-menu-wrap { position: relative; flex: none; }
+/* ☰ — blends into the background (no fill), like every other chrome icon */
+.brand-menu { display: inline-flex; align-items: center; justify-content: center; background: var(--bg); border: 0; border-radius: 9px; color: var(--muted); cursor: pointer; padding: 7px; }
+.brand-menu:hover { background: var(--hover); color: var(--text); }
+.brand-menu svg { width: 20px; height: 20px; }
+/* the ☰ menu popover, dropped under the button (shared .sess-pop recipe) */
+.side-menu { position: absolute; top: calc(100% + 6px); right: 0; left: auto; }
+/* ● host — the connected computer + live/down dot, under the logo */
+.side-host { display: inline-flex; align-items: center; gap: 7px; align-self: flex-start; max-width: 100%; margin-left: 3px; padding: 3px 6px; background: none; border: 0; border-radius: 8px; color: var(--muted); font: inherit; font-size: var(--fs-meta); cursor: pointer; }
+.side-host:hover { background: var(--hover); color: var(--text); }
+.side-host-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* connection dot — green live, red (pulsing) when the stream is down. Reused by
+   the sidebar host row and the chat topbar folder chip. */
+.conn-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: #2ea043; }
+.conn-dot.off { background: var(--danger); animation: conn-pulse 1s ease-in-out infinite; }
+@keyframes conn-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 /* one scroll container for everything under the brand (buttons + sessions);
    the top padding clears the floating brand, contain keeps a pull at the top
    from chaining into the page's own pull-to-refresh */
-.side-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-top: 56px; overscroll-behavior-y: contain; }
+.side-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-top: 78px; overscroll-behavior-y: contain; }
 /* no visible scrollbar: it takes layout width, which shrank the full-width
    rows (same reason the popovers below hide theirs) */
 .side-scroll { scrollbar-width: none; }
@@ -211,18 +232,22 @@ body {
 .side-files-btn { display: flex; align-items: center; justify-content: space-between; gap: 9px; width: calc(100% - 16px); margin: 0 8px 2px; padding: .75em 7px; background: none; border: 0; border-radius: 10px; cursor: pointer; font-size: var(--fs-row); color: var(--text); }
 .side-files-btn:hover { background: var(--hover); }
 .side-files-count { font-size: var(--fs-meta); color: var(--muted); background: var(--panel-2); border-radius: 999px; padding: 2px 9px; }
-/* "New chat" split button: the one accent element in the column. The wide half
-   starts a chat in the last project; the folder half opens the picker. Same
-   8px+7px inset as the rows below, so its icon lines up with theirs. */
-.side-new { display: flex; align-items: stretch; width: calc(100% - 16px); margin: 0 8px 4px; border-radius: 10px; overflow: hidden; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
-.side-new button { display: flex; align-items: center; border: 0; background: none; color: inherit; font: inherit; font-size: var(--fs-row); cursor: pointer; }
-.side-new button:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
-.side-new-main { flex: 1; gap: 9px; padding: .75em 7px; font-weight: 600; text-align: left; }
-.side-new-pick { flex: none; padding: 0 13px; border-left: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); }
+/* "New chat" — the one primary action kept out of the ☰ menu, so it reads
+   accent. Select project now lives in that menu, so this is a single button. */
+.side-new-solo { display: flex; align-items: center; gap: 9px; width: calc(100% - 16px); margin: 0 8px 4px; padding: .8em 12px; border: 0; border-radius: 10px; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); font: inherit; font-size: var(--fs-row); font-weight: 600; text-align: left; cursor: pointer; }
+.side-new-solo:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+/* agent tabs — the home page's top-level choice. Which agent you're talking to
+   is decided HERE (new chats use it, the list filters by it); the chat page
+   has no agent picker. Hidden when only one agent is registered. */
+.agent-tabs { display: flex; gap: 4px; margin: 2px 15px 10px; padding: 3px; background: var(--panel-2); border-radius: 12px; overflow-x: auto; scrollbar-width: none; }
+.agent-tabs::-webkit-scrollbar { display: none; }
+.agent-tabs[hidden] { display: none; }
+/* grow to fill when they fit; keep their label and scroll when they don't */
+.agent-tabs button { flex: 1 0 auto; padding: 9px 14px; border: 0; border-radius: 9px; background: none; color: var(--muted); font: inherit; font-size: var(--fs-ctl); font-weight: 600; cursor: pointer; white-space: nowrap; }
+.agent-tabs button.on { background: var(--panel); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.18); }
+
 /* hairline between the action rows and the sessions area */
 .side-sep { border-top: 1px solid var(--border); margin: 8px 15px 0; }
-/* Settings pinned under the scroll column */
-.side-foot { flex: none; border-top: 1px solid var(--border); padding: 6px 0 calc(6px + env(safe-area-inset-bottom, 0px)); }
 /* "Sessions" header + grouping filter popover */
 .sess-head { display: flex; align-items: center; gap: 8px; padding: 14px 10px 5px 15px; position: relative; }
 .sess-title { flex: 1; font-size: var(--fs-label); font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
@@ -455,6 +480,12 @@ body {
 /* Allow-always switch row */
 .switch-row { display: flex; align-items: center; gap: 8px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px; padding: 11px 13px; cursor: pointer; }
 .switch-row:hover { background: var(--hover); }
+
+/* "Continue with <agent>" — the handoff row at the picker's bottom: opens a NEW
+   chat for that agent with this chat's transcript attached (no in-place switch). */
+.picker-handoff { display: flex; align-items: center; justify-content: space-between; gap: 8px; background: none; border: 1px solid var(--border); border-radius: 12px; padding: 11px 13px; color: var(--accent); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; text-align: left; }
+.picker-handoff:hover { background: var(--hover); }
+.picker-handoff svg { width: 16px; height: 16px; flex: none; }
 .switch-label { font-size: 13px; color: var(--muted); }
 /* .switch / .sw-knob styles are defined once, up in the sidebar section */
 .pick-h { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); padding: 6px 8px 2px; }
@@ -821,6 +852,15 @@ body {
 .toast { position: fixed; left: 50%; bottom: 92px; transform: translateX(-50%); z-index: 130; max-width: 86vw; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 12px; padding: 9px 14px; font-size: 13px; text-align: center; box-shadow: 0 8px 30px rgba(0,0,0,.35); }
 .toast[hidden] { display: none; }
 
+/* floating connection banner — pinned top-center over EVERY screen; renders
+   only while the stream is down. Muted "Reconnecting…" that escalates to the
+   danger tone if the outage persists. (Mirrors the Android ConnectionBanner.) */
+.conn-banner { position: fixed; left: 50%; top: calc(10px + env(safe-area-inset-top, 0px)); transform: translateX(-50%); z-index: 140; display: flex; align-items: center; gap: 8px; max-width: 90vw; background: var(--panel); color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 7px 14px; font-size: 12.5px; box-shadow: 0 8px 30px rgba(0,0,0,.35); }
+.conn-banner[hidden] { display: none; }
+.conn-banner .spinner { width: 13px; height: 13px; border-width: 2px; }
+.conn-banner.escalated { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+.conn-banner.escalated .spinner { border-top-color: var(--danger); }
+
 /* ---- first-run guide: spotlight + explainer card ---- */
 .guide-overlay { position: fixed; inset: 0; z-index: 80; }
 .guide-hl { position: fixed; border-radius: 12px; box-shadow: 0 0 0 200vmax rgba(0,0,0,.62); border: 2px solid var(--accent); pointer-events: none; transition: left .25s ease, top .25s ease, width .25s ease, height .25s ease; }
@@ -854,7 +894,9 @@ body {
 #backdrop { display: none; }
 @media (max-width: 760px) {
   #app { grid-template-columns: 1fr; }
-  #sidebar { position: fixed; inset: 0 auto 0 0; width: var(--sidebar-w); transform: translateX(-100%); transition: transform .2s ease; z-index: 30; }
+  /* On phones the sidebar is the HOME PAGE: full-width, the app opens on it
+     (boot sets nav-open), and opening a chat slides it away like a page. */
+  #sidebar { position: fixed; inset: 0 auto 0 0; width: 100%; transform: translateX(-100%); transition: transform .2s ease; z-index: 30; border-right: 0; }
   body.nav-open #sidebar { transform: none; }
   #backdrop { display: block; position: fixed; inset: 0; background: rgba(0,0,0,.5); opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 20; }
   body.nav-open #backdrop { opacity: 1; pointer-events: auto; }

@@ -204,6 +204,10 @@ export function createChatController({ api, store, emitter }) {
       if (streamReady && Date.now() - lastEventAt > 40000) openStream(true);
     }, 10000);
     es = api.stream();
+    // EventSource drops fire onerror (it auto-retries); reflect that as the
+    // connection state feeding the host dot + the floating banner. A fresh
+    // "connected" event below flips it back.
+    es.onerror = () => { streamReady = false; store.set({ connected: false }); };
     let firstConnect = !asReconnect;
     es.onmessage = (e) => {
       lastEventAt = Date.now();
@@ -214,6 +218,7 @@ export function createChatController({ api, store, emitter }) {
         // "connected" is the normal open; later ones are reconnects — re-sync so
         // nothing missed while disconnected stays missing.
         streamReady = true;
+        store.set({ connected: true });
         const id = store.get().activeId;
         if (firstConnect) { firstConnect = false; if (id) requestResync(id); }
         else {
@@ -345,10 +350,11 @@ export function createChatController({ api, store, emitter }) {
     refreshSessions();
   }
 
-  // Create a new chat, optionally bound to a project folder (cwd). The folder is
-  // chosen at creation time — changing it later resets the agent's resume thread.
-  async function newSession(cwd) {
-    const s = await api.createSession({ agentId: store.get().agentId, cwd: cwd || null });
+  // Create a new chat, optionally bound to a project folder (cwd) and an agent
+  // (the home page's selected tab; omitted = the active session's agent). The
+  // folder is chosen at creation time — changing it later resets the resume thread.
+  async function newSession(cwd, agentId) {
+    const s = await api.createSession({ agentId: agentId || store.get().agentId, cwd: cwd || null });
     await refreshSessions();
     await openSession(s.id);
     // Pin the defaults this chat opened with — otherwise an untouched new chat

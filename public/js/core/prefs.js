@@ -9,6 +9,7 @@ export const KEYS = {
   theme: "ra-theme",                // "dark" | "light"
   accent: "ra-accent",              // accent hex override ("" = theme default)
   markdown: "ra-markdown",          // "1" = format markdown, "0" = raw text
+  homeAgent: "ra-home-agent",       // agent tab selected on the home page (new chats + list filter)
   sessionView: "ra-session-view",   // sidebar grouping: "project" | "all"
   sessionModel: "ra-session-model", // "1" = show each session's model in the list
   sideGroups: "ra-side-groups",     // collapsed sidebar project groups (JSON array of cwds)

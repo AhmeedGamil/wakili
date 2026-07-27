@@ -8,6 +8,12 @@ export function createGuideSteps({ sidebar, picker, appearanceMenu }) {
   return () => [
     {
       before: () => appearanceMenu.close(),
+      target: () => sidebar.el.querySelector(".agent-tabs"),
+      optional: true, // hidden when only one agent is registered
+      title: "Pick your agent",
+      body: "Choose who you're talking to. The tabs show that agent's chats, and New chat starts with it. A chat keeps its agent — to move a conversation, use “Continue with…” in its model menu.",
+    },
+    {
       target: () => sidebar.el.querySelector(".side-new"),
       title: "Start a chat",
       body: "Every chat runs inside a project folder on your computer. Tap New chat to start one in your last folder, or the folder icon to pick (or create) a different one.",
