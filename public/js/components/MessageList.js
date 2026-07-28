@@ -617,11 +617,15 @@ export function createMessageList() {
       const frame = el("span", { class: "chat-image-frame" }, img);
       return el("div", { class: "msg assistant" }, shimmerLoad(frame, img));
     }
-    const card = el("div", { class: "file-card" });
-    const link = el("a", { class: "file-link", onClick: () => downloadFile(file.url, file.name) }, icon("download"), el("span", { class: "file-name", text: file.name }));
-    attachMediaMenu(link, { url: file.url, name: file.name, image: false }); // hold: Save / Copy
-    card.appendChild(link);
+    // The WHOLE card downloads (the file name alone was too small a tap target);
+    // hold anywhere on it opens Save / Copy. Images stay as their own tappable
+    // thumbnail above — this card shape is for non-image files only.
+    const card = el("div", { class: "file-card", role: "button", tabindex: "0",
+      onClick: () => downloadFile(file.url, file.name),
+      onKeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); downloadFile(file.url, file.name); } } });
+    card.appendChild(el("span", { class: "file-link" }, icon("download"), el("span", { class: "file-name", text: file.name })));
     if (file.caption) card.appendChild(el("div", { class: "file-cap", text: file.caption, title: file.caption }));
+    attachMediaMenu(card, { url: file.url, name: file.name, image: false }); // hold: Save / Copy
     return el("div", { class: "msg assistant" }, card);
   }
   function addFile(file) { segment(fileCard(file)); }

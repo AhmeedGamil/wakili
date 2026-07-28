@@ -449,14 +449,19 @@ body {
 
 /* one picker: closed shows the model; open shows the agent→model tree + settings */
 .picker { position: relative; }
-.picker-trigger { display: flex; align-items: center; gap: 6px; font: inherit; font-size: 14px; font-weight: 600; background: var(--pill); color: var(--text); border: 1px solid var(--border); border-radius: 999px; padding: 8px 14px; cursor: pointer; max-width: 210px; transition: background .12s; }
-.picker-trigger:hover { background: var(--panel-2); }
+/* Model picker — lives with the composer now. A quiet text chip (no pill fill),
+   so it reads as a setting line rather than competing with Send. */
+.composer-picker { display: flex; padding: 0 2px 4px; }
+.picker { position: relative; }
+.picker-trigger { display: flex; align-items: center; gap: 5px; font: inherit; font-size: 12.5px; font-weight: 600; background: none; color: var(--muted); border: 0; border-radius: 8px; padding: 4px 8px; cursor: pointer; max-width: 210px; transition: background .12s, color .12s; }
+.picker-trigger:hover { background: var(--hover); color: var(--text); }
 .pick-current { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pick-caret { color: var(--muted); font-size: 12px; }
 .pick-tabs { display: flex; gap: 4px; background: var(--panel-2); border-radius: 10px; padding: 3px; margin-bottom: 4px; }
 .pick-tab { flex: 1; background: none; border: 0; color: var(--muted); font: inherit; font-size: 13px; font-weight: 600; padding: 7px; border-radius: 8px; cursor: pointer; }
 .pick-tab.active { background: var(--accent); color: var(--accent-ink); }
-.picker-pop { position: absolute; top: calc(100% + 8px); left: 0; width: 290px; max-width: calc(100vw - 24px); max-height: 76vh; overflow-y: auto; background: var(--panel); border: 1px solid var(--border); border-radius: 18px; box-shadow: 0 20px 56px rgba(0,0,0,.5); padding: 10px; z-index: 50; display: flex; flex-direction: column; gap: 8px; }
+/* opens UPWARD from the composer chip (it sits at the bottom of the screen) */
+.picker-pop { position: absolute; bottom: calc(100% + 8px); left: 0; width: 290px; max-width: calc(100vw - 24px); max-height: 70vh; overflow-y: auto; background: var(--panel); border: 1px solid var(--border); border-radius: 18px; box-shadow: 0 20px 56px rgba(0,0,0,.5); padding: 10px; z-index: 50; display: flex; flex-direction: column; gap: 8px; }
 
 /* modern dropdown */
 .dd { display: flex; flex-direction: column; }
@@ -643,7 +648,10 @@ body {
 .files-row.muted { color: var(--muted); }
 .perm-result { font-weight: 600; color: var(--muted); }
 
-.file-card { display: inline-block; width: fit-content; box-sizing: border-box; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 10px; max-width: 85%; }
+/* the WHOLE card is the download hit target (a file name alone was too small) */
+.file-card { display: inline-block; width: fit-content; box-sizing: border-box; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px; max-width: 85%; cursor: pointer; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; transition: background .12s ease; }
+.file-card:hover { background: var(--panel-2); }
+.file-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* User and agent images share one standalone, aspect-preserving treatment.
    The image is the interactive element, so its rounded pixels and hit target
    are always identical. The frame exists only while reserving loading space. */
@@ -655,7 +663,7 @@ body {
 .msg.assistant .chat-image { margin-right: auto; }
 .msg.user .chat-image-frame.shimmer { margin-left: auto; }
 .msg.assistant .chat-image-frame.shimmer { margin-right: auto; }
-.file-link { display: flex; align-items: center; gap: 7px; max-width: 100%; margin-top: 8px; color: var(--accent); text-decoration: none; font-size: 14px; }
+.file-link { display: flex; align-items: center; gap: 7px; max-width: 100%; color: var(--accent); text-decoration: none; font-size: 14px; }
 .file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 /* Non-image descriptions stay inside the compact file card. */
 .file-cap { color: var(--muted); font-size: 13px; margin-top: 6px; width: 0; min-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

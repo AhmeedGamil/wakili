@@ -46,7 +46,10 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
   // The add-menu lives inside the bar so it can float anchored above the + button
   // (absolutely positioned — it takes no layout space and covers nothing else).
   const bar = el("div", { class: "composer-bar" }, addMenu, attachBtn, input, send);
-  const root = el("form", { id: "composer", class: "composer" }, menu, queued, chips, bar, fileInput, imgInput);
+  // The model picker lives here now (not the topbar) — with the other per-turn
+  // controls. main.js drops the picker element into this slot.
+  const pickerSlot = el("div", { class: "composer-picker" });
+  const root = el("form", { id: "composer", class: "composer" }, menu, queued, chips, pickerSlot, bar, fileInput, imgInput);
 
   // A contenteditable auto-grows natively — ZERO JS measurement on the typing
   // path. The multiline class is driven by a ResizeObserver, which fires after
@@ -304,6 +307,7 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
 
   return {
     el: root,
+    pickerSlot, // the model picker mounts here (see main.js)
     // Native back button: a transient menu (slash commands or the + menu) is
     // its own dismissible layer — report whether one is open and close it.
     menusOpen: () => slash.isOpen() || !addMenu.hasAttribute("hidden"),

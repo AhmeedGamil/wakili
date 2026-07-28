@@ -66,7 +66,6 @@ const picker = createModelPicker({
   onControlChange: (key, value) => controller.setControl(key, value),
   onToggleAutoAllow: (v) => controller.setAutoAllow(v),
 });
-topbar.slot.appendChild(picker.el);
 const folderPicker = createFolderPicker({
   onBrowse: (path) => controller.browseFolders(path),
   onCreate: (parent, name) => controller.createFolder(parent, name),
@@ -136,6 +135,9 @@ const composer = createComposer({
   onUpload: (a, onProgress) => api.uploadProgress(a.name, a.dataBase64, store.get().activeId || "", onProgress),
   onRemoveUpload: (up) => controller.removeUpload(up),
 });
+// The model picker sits with the composer now (not the topbar), next to the
+// other per-turn controls; its popover opens upward from there.
+composer.pickerSlot.appendChild(picker.el);
 
 const backdrop = el("div", { id: "backdrop", onClick: () => document.body.classList.remove("nav-open") });
 const main = el("main", { id: "main" }, topbar.el, messageList.el, dock.el, composer.el);
