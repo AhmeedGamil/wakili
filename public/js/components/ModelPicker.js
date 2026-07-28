@@ -5,7 +5,6 @@
 // exports this chat's transcript into a NEW chat for that agent.
 
 import { el, dismissFirst, backdropFor } from "./dom.js";
-import { icon } from "./icons.js";
 import { createDropdown } from "./Dropdown.js";
 
 export function createModelPicker({ onSwitchAgent, onPickModel, onControlChange, onToggleAutoAllow }) {
@@ -51,14 +50,18 @@ export function createModelPicker({ onSwitchAgent, onPickModel, onControlChange,
     swRow.addEventListener("click", (e) => { e.stopPropagation(); onToggleAutoAllow(!autoAllow); });
     pop.appendChild(swRow);
 
-    // Handoff: this chat's agent is fixed, but the conversation can move — a
-    // new chat for the other agent with the exported transcript attached.
-    for (const a of agents) {
-      if (a.id === agentId) continue;
-      pop.appendChild(el("button", {
-        class: "picker-handoff", type: "button",
-        onClick: () => { setOpen(false); onSwitchAgent(a.id); },
-      }, el("span", { text: `Continue with ${a.label}` }), icon("arrow-up-right")));
+    // Handoff: this chat's agent is fixed, but the conversation can move. One
+    // expandable "Continue with" dropdown (like the controls above) whose options
+    // are the OTHER agents; picking one opens a new chat for it with the
+    // transcript attached. No preset value — it's an action list.
+    const others = agents.filter((a) => a.id !== agentId);
+    if (others.length) {
+      mk({
+        label: "Continue with",
+        options: others.map((a) => ({ value: a.id, label: a.label, description: a.description })),
+        value: "",
+        onChange: (id) => { setOpen(false); onSwitchAgent(id); },
+      });
     }
   }
 

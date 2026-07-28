@@ -48,6 +48,7 @@ export const api = {
   hasToken: () => !!TOKEN,
   agents: () => call("GET", "/api/agents"),
   endpoints: () => call("GET", "/api/endpoints"),
+  host: () => call("GET", "/api/host"),
   power: () => call("GET", "/api/power"),
   lockScreen: () => call("POST", "/api/lock-screen", {}),
   screenOff: () => call("POST", "/api/screen-off", {}),

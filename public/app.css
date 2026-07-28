@@ -480,12 +480,6 @@ body {
 /* Allow-always switch row */
 .switch-row { display: flex; align-items: center; gap: 8px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 12px; padding: 11px 13px; cursor: pointer; }
 .switch-row:hover { background: var(--hover); }
-
-/* "Continue with <agent>" — the handoff row at the picker's bottom: opens a NEW
-   chat for that agent with this chat's transcript attached (no in-place switch). */
-.picker-handoff { display: flex; align-items: center; justify-content: space-between; gap: 8px; background: none; border: 1px solid var(--border); border-radius: 12px; padding: 11px 13px; color: var(--accent); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; text-align: left; }
-.picker-handoff:hover { background: var(--hover); }
-.picker-handoff svg { width: 16px; height: 16px; flex: none; }
 .switch-label { font-size: 13px; color: var(--muted); }
 /* .switch / .sw-knob styles are defined once, up in the sidebar section */
 .pick-h { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); padding: 6px 8px 2px; }
@@ -852,14 +846,13 @@ body {
 .toast { position: fixed; left: 50%; bottom: 92px; transform: translateX(-50%); z-index: 130; max-width: 86vw; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 12px; padding: 9px 14px; font-size: 13px; text-align: center; box-shadow: 0 8px 30px rgba(0,0,0,.35); }
 .toast[hidden] { display: none; }
 
-/* floating connection banner — pinned top-center over EVERY screen; renders
-   only while the stream is down. Muted "Reconnecting…" that escalates to the
-   danger tone if the outage persists. (Mirrors the Android ConnectionBanner.) */
-.conn-banner { position: fixed; left: 50%; top: calc(10px + env(safe-area-inset-top, 0px)); transform: translateX(-50%); z-index: 140; display: flex; align-items: center; gap: 8px; max-width: 90vw; background: var(--panel); color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 7px 14px; font-size: 12.5px; box-shadow: 0 8px 30px rgba(0,0,0,.35); }
-.conn-banner[hidden] { display: none; }
-.conn-banner .spinner { width: 13px; height: 13px; border-width: 2px; }
-.conn-banner.escalated { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
-.conn-banner.escalated .spinner { border-top-color: var(--danger); }
+/* small "Reconnecting…" pill — pinned top-center, shown only on the home page
+   (body.nav-open on phones; the sidebar is always visible on desktop). One quiet
+   line, no escalation. (Mirrors the Android ConnectionBanner.) */
+.conn-banner { position: fixed; left: 50%; top: calc(10px + env(safe-area-inset-top, 0px)); transform: translateX(-50%); z-index: 140; display: none; align-items: center; gap: 7px; max-width: 90vw; background: var(--panel); color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 5px 12px; font-size: 12px; box-shadow: 0 8px 30px rgba(0,0,0,.35); }
+body.nav-open .conn-banner:not([hidden]) { display: flex; }
+@media (min-width: 761px) { .conn-banner:not([hidden]) { display: flex; } }
+.conn-banner .spinner { width: 12px; height: 12px; border-width: 2px; }
 
 /* ---- first-run guide: spotlight + explainer card ---- */
 .guide-overlay { position: fixed; inset: 0; z-index: 80; }
