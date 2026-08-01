@@ -147,4 +147,8 @@ export const api = {
   // Ask the server to publish a session's live state (turn parts + pending
   // cards) into the stream; `client` lets other tabs ignore our snapshot.
   resync: (id, client) => call("POST", `/api/sessions/${id}/resync`, { client }),
+  // Upload this client's stream flight recorder (see core/recorder.js) so the
+  // gateway's own recorder holds both sides of the same turn. Diagnostics only:
+  // the gateway drops it unless WAKILI_DEBUG_STREAM=1.
+  debugReport: (report) => call("POST", "/api/debug/report", report),
 };

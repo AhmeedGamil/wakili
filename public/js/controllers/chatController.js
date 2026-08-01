@@ -3,6 +3,7 @@
 // events (emitter) that UI components subscribe to.
 
 import { parseClaudeEvent } from "../core/streamParser.js";
+import { recorder } from "../core/recorder.js";
 import { KEYS, setPref, takeSession } from "../core/prefs.js";
 import { loadLastConfig, saveLastConfig as persistLastConfig, rememberPermMode, defaultsFor, normalizeControls } from "./agentConfig.js";
 import { createSessionCache } from "./sessionCache.js";
@@ -28,6 +29,9 @@ export function createChatController({ api, store, emitter }) {
   // Identifies this tab: the resync snapshot is tagged with it, so a snapshot
   // another tab requested doesn't double-render here.
   const clientId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+  // An anomaly uploads this tab's ring to the gateway, so one /api/debug/stream
+  // read shows the phone's and the laptop's view of the same turn side by side.
+  recorder.setUploader(api.debugReport);
   // Between switching to a session and its snapshot arriving on the stream, the
   // session's content events are ignored — the snapshot (published into the same
   // ordered stream) already contains them; rendering both would duplicate.
@@ -52,12 +56,32 @@ export function createChatController({ api, store, emitter }) {
   // skip set, NOT the wider GATED display set: Bash/Write/… DO belong here.
   const QA_TOOLS = new Set(["AskUserQuestion", "mcp__wakili__ask_options", "ask_options"]);
   const liveParts = new Map(); // sessionId -> parts[] (same shape the server assembles)
+
+  // The gateway's ordering stamp (src/sse.mjs) for the newest event folded into
+  // each session's buffer. Recorded ONLY — nothing branches on it yet, so
+  // behaviour is byte-for-byte what it was; it exists so an out-of-order
+  // snapshot shows up in the recorder before we start rejecting one.
+  const appliedSeq = new Map(); // sessionId -> seq
+
   function accumulate(id, ev) {
     switch (ev.kind) {
       case "turnStart": liveParts.set(id, []); break;
       // Any snapshot is server truth for the whole turn — adopt it even when it
       // was another tab's resync (the render path filters by client; we don't).
-      case "snapshot": liveParts.set(id, (ev.parts || []).map((p) => ({ ...p }))); break;
+      case "snapshot": {
+        // A snapshot stamped BEFORE state we have already folded in is stale:
+        // its resync was answered out of order, and adopting it rewinds the
+        // turn (the missing-chunk symptom). Only reported for now.
+        const applied = appliedSeq.get(id);
+        if (ev.seq != null && applied != null && ev.seq < applied) {
+          recorder.anomaly("stale-snapshot", {
+            sessionId: id, snapshotSeq: ev.seq, appliedSeq: applied,
+            parts: (ev.parts || []).length, client: ev.client || "",
+          });
+        }
+        liveParts.set(id, (ev.parts || []).map((p) => ({ ...p })));
+        break;
+      }
       case "turnEnd": liveParts.delete(id); break; // the turn lives in the transcript now
       case "text": case "thinking": {
         const parts = liveParts.get(id) || [];
@@ -82,6 +106,12 @@ export function createChatController({ api, store, emitter }) {
         break;
       }
     }
+    // Advance the session's watermark past everything we've now seen. Kept
+    // outside the switch on purpose: lifecycle events don't change parts, but
+    // they DO prove the stream has moved past that point, which is exactly what
+    // makes a later-arriving older snapshot recognisable as stale.
+    if (ev.seq != null) appliedSeq.set(id, ev.seq);
+    recorder.event(id, ev);
   }
 
   // Ask the server to publish `id`'s live state into the stream; gate content
@@ -95,6 +125,7 @@ export function createChatController({ api, store, emitter }) {
   // already re-opens the session (and resyncs) when it comes back.
   function requestResync(id, attempt = 0) {
     if (!streamReady) return; // the stream's "connected" handler resyncs on open
+    recorder.note("resync-request", { sessionId: id, attempt, appliedSeq: appliedSeq.get(id) });
     awaitingSnapshot = true;
     clearTimeout(snapTimer);
     snapTimer = setTimeout(() => { awaitingSnapshot = false; }, 10000);
@@ -219,6 +250,9 @@ export function createChatController({ api, store, emitter }) {
         // nothing missed while disconnected stays missing.
         streamReady = true;
         store.set({ connected: true });
+        // One switch for all three sides: the gateway's WAKILI_DEBUG_STREAM.
+        recorder.enable(ev.debug);
+        recorder.note("connected", { reconnect: !firstConnect });
         const id = store.get().activeId;
         if (firstConnect) { firstConnect = false; if (id) requestResync(id); }
         else {
@@ -227,6 +261,9 @@ export function createChatController({ api, store, emitter }) {
           // all. The openSession fetch + resync snapshot rebuild the active
           // one; background buffers restart from their next turnStart/snapshot.
           liveParts.clear();
+          // The watermarks describe buffers that no longer exist; a stale one
+          // would reject the very snapshot sent to repair the gap.
+          appliedSeq.clear();
           refreshSessions();
           if (id) openSession(id);
         }
@@ -318,6 +355,7 @@ export function createChatController({ api, store, emitter }) {
 
   async function openSession(id, attempt = 0) {
     const seq = ++openSeq;
+    recorder.note("open-session", { sessionId: id, attempt, cached: !!sessionCache.get(id), buffered: (liveParts.get(id) || []).length });
     const cached = sessionCache.get(id);
     if (cached) applySession(id, cached); // optimistic: switch now, reconcile below
     // First-time open (no cached transcript): the pane would sit empty while the

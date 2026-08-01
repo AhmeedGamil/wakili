@@ -2,9 +2,23 @@
 // neutral domain events the UI understands. Codex/Gemini get their own parser;
 // the rest of the frontend never sees a vendor-specific event shape.
 
+// The gateway stamps every published event with a monotonic `seq` (see
+// src/sse.mjs). It rides along on every parsed event so the controller can tell
+// a snapshot that is NEWER than what it has applied from one that is older —
+// two resyncs can be answered out of order, and the late/older one must not be
+// allowed to rewind a live turn. Gateways that predate it send nothing, and
+// `seq` stays undefined: every consumer treats that as "unknown, apply as before".
 export function parseClaudeEvent(ev) {
+  const out = classify(ev);
+  if (ev && ev.seq != null) out.seq = ev.seq;
+  return out;
+}
+
+function classify(ev) {
   if (ev.type === "_gateway") {
-    if (ev.subtype === "connected") return { kind: "connected" };
+    // `debug` mirrors the gateway's WAKILI_DEBUG_STREAM, so one env var on the
+    // laptop turns this client's flight recorder on too.
+    if (ev.subtype === "connected") return { kind: "connected", debug: !!ev.debug };
     if (ev.subtype === "turn_start") return { kind: "turnStart" };
     if (ev.subtype === "turn_end") return { kind: "turnEnd", title: ev.title };
     // A session's live state (in-progress turn parts + pending cards), published

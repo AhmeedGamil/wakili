@@ -25,6 +25,7 @@ import { closeWarmSdk } from "./src/agents/claude-sdk.mjs";
 import { closeWarmCodex } from "./src/agents/codex.mjs";
 import { sessionStore, onSessionSave } from "./src/sessions/store.mjs";
 import { subscribe, subscribeAll, publish } from "./src/sse.mjs";
+import { record as recordDebug, recordClientReport, dump as debugDump, recorderEnabled } from "./src/recorder.mjs";
 import { createPermission, waitPermission, resolvePermission } from "./src/permissions.mjs";
 import { lockScreen, screenOff, setKeepAwake, powerStatus, shutdownPower, shutdownComputer } from "./src/power.mjs";
 import { autostartStatus, setAutostart, reconcileAutostart, enrollAutostartOnce, refreshAutostart } from "./src/autostart.mjs";
@@ -1072,6 +1073,21 @@ const server = http.createServer(async (req, res) => {
       } catch { return notFound(res); }
     }
 
+    // ---- stream diagnostics (WAKILI_DEBUG_STREAM=1) ----
+    // Read the flight recorder: what the gateway published, per-turn delta
+    // counts, and whatever the clients uploaded when they saw an anomaly. One
+    // request shows both sides of the same turn, which is what you need to tell
+    // "the stream dropped it" from "the client's render lost it".
+    if (p === "/api/debug/stream" && m === "GET") return json(res, 200, debugDump());
+
+    // A client's own recorder ring, posted when it detects an out-of-order
+    // snapshot. Ignored entirely when the recorder is off.
+    if (p === "/api/debug/report" && m === "POST") {
+      const b = await readBody(req);
+      recordClientReport(b);
+      return json(res, 200, { ok: true, recorded: recorderEnabled });
+    }
+
     // Multiplexed live stream: ONE connection carrying every session's events,
     // each tagged with its sessionId. The client routes them (active session
     // renders live; background sessions update badges/caches). Session-specific
@@ -1085,7 +1101,10 @@ const server = http.createServer(async (req, res) => {
       });
       res.flushHeaders?.();
       res.write(":" + " ".repeat(2048) + "\n\n");
-      res.write(`data: ${JSON.stringify({ type: "_gateway", subtype: "connected" })}\n\n`);
+      // `debug` turns the CLIENTS' flight recorders on from the gateway's own
+      // env var, so WAKILI_DEBUG_STREAM=1 is the single switch for all three
+      // sides instead of a toggle to find on each device.
+      res.write(`data: ${JSON.stringify({ type: "_gateway", subtype: "connected", debug: recorderEnabled })}\n\n`);
       const unsub = subscribeAll(res);
       // A DATA ping, not an SSE comment: comments are invisible to the browser's
       // EventSource API, so clients couldn't tell a silent dead socket (phone
@@ -1104,6 +1123,10 @@ const server = http.createServer(async (req, res) => {
     if ((mm = p.match(/^\/api\/sessions\/([\w-]+)\/resync$/)) && m === "POST") {
       const id = mm[1];
       const b = await readBody(req);
+      // The request side of a resync. Its snapshot is recorded by publish()
+      // below; having both makes an out-of-order pair visible as two requests
+      // answered in the opposite order.
+      recordDebug("resync", { sessionId: id, client: (b && b.client) || "", parts: (activeTurns.get(id) || []).length, busy: busy.has(id) });
       publish(id, {
         type: "_gateway", subtype: "snapshot", client: (b && b.client) || "",
         parts: activeTurns.get(id) || [], busy: busy.has(id),
