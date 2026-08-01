@@ -65,10 +65,13 @@ export function createFilesPage({ onDelete } = {}) {
     }
     if (tab === "images") {
       const grid = el("div", { class: "ft-grid" });
+      // The viewer opens on the tapped image but holds the whole visible grid
+      // (current tab + filter), so swiping in the viewer matches what's behind it.
+      const gallery = items.map((f) => ({ url: f.url, name: f.name }));
       for (const f of items) {
         const busy = deleting.has(f.token);
         const img = el("img", { class: "ft-thumb", src: f.url, alt: f.name });
-        const link = el("a", { class: "ft-imglink", title: f.name, onClick: () => { if (!deleting.has(f.token)) openImage(f.url, f.name); } }, img);
+        const link = el("a", { class: "ft-imglink", title: f.name, onClick: () => { if (!deleting.has(f.token)) openImage(f.url, f.name, gallery); } }, img);
         if (busy) link.appendChild(el("div", { class: "ft-deleting" }, el("span", { class: "spinner-danger" }), el("span", { text: "Deleting…" })));
         else attachMediaMenu(link, { url: f.url, name: f.name, image: true, onDelete: () => startDelete(f) });
         grid.appendChild(shimmerLoad(link, img));

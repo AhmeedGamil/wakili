@@ -57,6 +57,21 @@ export const api = {
   autostart: () => call("GET", "/api/autostart"),
   setAutostart: (on) => call("POST", "/api/autostart", { on }),
   listSessions: () => call("GET", "/api/sessions"),
+  // Chats started in a terminal on the host, a page at a time (newest first).
+  // The gateway filters out the ones Wakili itself created — they'd otherwise
+  // come back as "host" chats, since every Wakili chat writes a host transcript.
+  hostSessions: ({ cursor = "", agentId = "", limit = 5, all = false } = {}) => {
+    const q = new URLSearchParams();
+    if (cursor) q.set("cursor", cursor);
+    if (agentId) q.set("agentId", agentId);
+    if (limit) q.set("limit", String(limit));
+    if (all) q.set("all", "1");
+    const qs = q.toString();
+    return call("GET", `/api/host-sessions${qs ? "?" + qs : ""}`);
+  },
+  // Continue a host chat here: binds a new Wakili session to the same agent-side
+  // resume id and imports its transcript for display.
+  adoptHostSession: (id) => call("POST", `/api/host-sessions/${id}/adopt`),
   createSession: (body) => call("POST", "/api/sessions", body || {}),
   // opts: { since, after } — conditional/delta fetch. With `since` the server
   // answers { unchanged: true } when nothing moved; with `after` it sends only
@@ -77,12 +92,20 @@ export const api = {
   saveControls: (id, agentId, controls) => call("PATCH", `/api/sessions/${id}`, { agentId, controls }),
   folders: (path) => call("GET", `/api/folders?path=${encodeURIComponent(path || "")}`),
   createFolder: (parent, name) => call("POST", "/api/folders", { parent, name }),
+  // Known project folders — one list for every agent, held by the gateway so
+  // all devices see the same projects.
+  projects: () => call("GET", "/api/projects"),
+  addProject: (path) => call("POST", "/api/projects", { path }),
+  forgetProject: (path) => call("DELETE", "/api/projects", { path }),
   files: () => call("GET", "/api/files"),
   deleteFile: (token) => call("DELETE", `/api/files/${token}`),
   deleteSession: (id) => call("DELETE", `/api/sessions/${id}`),
   // Continue with a different agent: exports the transcript to a handoff file
   // and returns the fresh session for the new agent plus the file to attach.
   handoff: (id, agentId) => call("POST", `/api/sessions/${id}/handoff`, { agentId }),
+  // Switch this chat's agent in place: same chat, same history, transcript
+  // exported so the new agent (which starts a fresh native thread) has context.
+  switchAgent: (id, agentId) => call("POST", `/api/sessions/${id}/agent`, { agentId }),
   send: (id, text, controls, attachments, agentId) =>
     call("POST", `/api/sessions/${id}/messages`, { text, controls, attachments, agentId }),
   // Shell commands can legitimately run up to the server's 60s cap — give them room.

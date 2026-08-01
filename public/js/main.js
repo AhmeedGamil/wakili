@@ -28,18 +28,27 @@ import { createGuideSteps } from "./components/guideSteps.js";
 import { createConnectionBanner } from "./components/ConnectionBanner.js";
 
 // autoAllow is per-session; applySession loads the active session's value.
-const store = createStore({ sessions: [], sessionsState: "loading", activeId: null, activeSession: null, agents: [], agentId: "claude", controls: {}, busyIds: {}, queued: {}, unreadIds: {}, autoAllow: false, connected: true, files: { received: [], uploaded: [] }, allFiles: [], power: { platform: "", keepAwake: false }, autostart: { supported: false, on: false } });
+const store = createStore({ sessions: [], sessionsState: "loading", activeId: null, activeSession: null, agents: [], agentId: "claude", projects: [], controls: {}, busyIds: {}, queued: {}, unreadIds: {}, autoAllow: false, connected: true, files: { received: [], uploaded: [] }, allFiles: [], power: { platform: "", keepAwake: false }, autostart: { supported: false, on: false } });
 const emitter = createEmitter();
 const controller = createChatController({ api, store, emitter });
 
 // ---- components ----
 // New chat: pick/create a project folder first (start browsing from the current
 // chat's folder), then create the chat there. The per-project + skips the modal.
+// Creating a chat is a round trip, and on a slow link the tap looked ignored
+// until the chat suddenly appeared. Every entry point goes through here so the
+// sidebar shows a spinner for exactly as long as the create is in flight.
+function startChat(cwd) {
+  document.body.classList.remove("nav-open");
+  sidebar.setCreating(true);
+  Promise.resolve(controller.newSession(cwd, sidebar.currentAgent()))
+    .finally(() => sidebar.setCreating(false));
+}
 function newChatWithPicker() {
   // Keep the sidebar where it is; it only closes once a folder is actually
   // picked and the new chat opens (cancelling leaves everything untouched).
   const start = store.get().activeSession?.effectiveCwd || "";
-  folderPicker.open((cwd) => { document.body.classList.remove("nav-open"); controller.newSession(cwd, sidebar.currentAgent()); }, start);
+  folderPicker.open((cwd) => startChat(cwd), start);
 }
 // New chats are born under the home page's selected agent tab — the chat page
 // itself has no agent picker anymore.
@@ -47,9 +56,19 @@ const sidebar = createSidebar({
   onNew: newChatWithPicker,
   // Header +: new chat in the last selected project (the open chat's folder),
   // skipping the picker. With nothing open it lands in the default project.
-  onNewLast: () => { document.body.classList.remove("nav-open"); controller.newSession(store.get().activeSession?.effectiveCwd || null, sidebar.currentAgent()); },
-  onNewInFolder: (cwd) => { document.body.classList.remove("nav-open"); controller.newSession(cwd, sidebar.currentAgent()); },
+  onNewLast: () => startChat(store.get().activeSession?.effectiveCwd || null),
+  onNewInFolder: (cwd) => startChat(cwd),
   onSelect: (id) => { document.body.classList.remove("nav-open"); controller.openSession(id); },
+  // "From the host": one page of terminal-started chats, and adopting one —
+  // which creates a real Wakili chat bound to that session and opens it.
+  onLoadHost: (opts) => api.hostSessions(opts),
+  onAdoptHost: async (id) => {
+    const s = await api.adoptHostSession(id);
+    document.body.classList.remove("nav-open");
+    await controller.refreshSessions();
+    await controller.openSession(s.id);
+    return s;
+  },
   onDelete: (id) => controller.deleteSession(id),
   onRename: (id, title) => controller.renameSession(id, title),
   onOpenFiles: () => filesPage.open(),
@@ -59,8 +78,8 @@ const sidebar = createSidebar({
 });
 const topbar = createTopbar({ onMenu: () => document.body.classList.toggle("nav-open") });
 const picker = createModelPicker({
-  // "Continue with X": the handoff flow — a NEW chat for that agent with the
-  // exported transcript attached (setAgent routes there on a non-empty chat).
+  // "Continue with X": switches this chat's agent in place — same chat, same
+  // history — attaching the exported transcript so the new agent has context.
   onSwitchAgent: (id) => controller.setAgent(id),
   onPickModel: (agentId, model) => controller.pickModel(agentId, model),
   onControlChange: (key, value) => controller.setControl(key, value),
@@ -141,9 +160,11 @@ composer.pickerSlot.appendChild(picker.el);
 
 const backdrop = el("div", { id: "backdrop", onClick: () => document.body.classList.remove("nav-open") });
 const main = el("main", { id: "main" }, topbar.el, messageList.el, dock.el, composer.el);
-// One floating connection banner over every screen — mounted at the app root.
+// The connection status lives at the end of the sidebar's host row — the host
+// it describes — instead of floating over the app.
 const connBanner = createConnectionBanner();
-document.getElementById("app").append(sidebar.el, main, backdrop, connBanner.el);
+sidebar.connSlot.appendChild(connBanner.el);
+document.getElementById("app").append(sidebar.el, main, backdrop);
 
 // The dock (permission/question cards) sits between the transcript and the
 // composer: a card appearing AFTER the transcript pinned to the bottom shrinks
@@ -309,8 +330,8 @@ emitter.on("requestResolved", (r) => dock.remove(r.id)); // answered elsewhere /
 emitter.on("file", (f) => messageList.addFile(f));
 emitter.on("turnEnd", () => messageList.endTurn());
 emitter.on("focusInput", () => composer.focus());
-// Agent handoff: a new chat was opened to continue with a different agent.
-// Attach the exported transcript (already on the laptop — status "done" skips
+// Agent switched on this chat. The new agent starts a fresh native thread, so
+// attach the exported transcript (already on the laptop — status "done" skips
 // the upload) and suggest a first message; nothing sends until the user does.
 emitter.on("handoff", ({ file }) => {
   composer.setState({
@@ -343,7 +364,7 @@ store.subscribe((s) => {
     uiSid = s.activeId;
     composer.setState(uiState.get(uiSid));
   }
-  sidebar.render({ sessions: s.sessions, activeId: s.activeId, busyIds: s.busyIds, files: s.allFiles, unreadIds: s.unreadIds, agents: s.agents, power: s.power, sessionsState: s.sessionsState, connected: s.connected });
+  sidebar.render({ sessions: s.sessions, activeId: s.activeId, busyIds: s.busyIds, files: s.allFiles, unreadIds: s.unreadIds, agents: s.agents, projects: s.projects, power: s.power, sessionsState: s.sessionsState, connected: s.connected });
   topbar.setConnected(s.connected);
   connBanner.set(s.connected);
   filesPage.render(s.allFiles);

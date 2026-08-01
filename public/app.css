@@ -81,7 +81,9 @@ body {
   position: absolute; top: 0; left: 0; right: 0; z-index: 4;
   display: flex; flex-direction: column; gap: 4px; padding: 12px 12px 24px;
   pointer-events: none;
-  background: linear-gradient(to bottom, var(--bg) 0%, var(--bg) 42%, transparent 100%);
+  /* Nearly solid until well past halfway, then a short fall-off: rows scrolling
+     under the brand disappear instead of showing through it. */
+  background: linear-gradient(to bottom, var(--bg) 0%, color-mix(in srgb, var(--bg) 94%, transparent) 62%, transparent 100%);
 }
 /* logo Wakili …… ☰ */
 .brand-row { display: flex; align-items: center; gap: 10px; padding: 0 3px; }
@@ -95,8 +97,11 @@ body {
 .brand-menu svg { width: 20px; height: 20px; }
 /* the ☰ menu popover, dropped under the button (shared .sess-pop recipe) */
 .side-menu { position: absolute; top: calc(100% + 6px); right: 0; left: auto; }
-/* ● host — the connected computer + live/down dot, under the logo */
-.side-host { display: inline-flex; align-items: center; gap: 7px; align-self: flex-start; max-width: 100%; margin-left: 3px; padding: 3px 6px; background: none; border: 0; border-radius: 8px; color: var(--muted); font: inherit; font-size: var(--fs-meta); cursor: pointer; }
+/* ● host — the connected computer + live/down dot, under the logo, with the
+   reconnect pill trailing at the row's end */
+.side-host-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.side-host-slot { margin-left: auto; flex: none; pointer-events: auto; }
+.side-host { display: inline-flex; align-items: center; gap: 7px; min-width: 0; margin-left: 3px; padding: 3px 6px; background: none; border: 0; border-radius: 8px; color: var(--muted); font: inherit; font-size: var(--fs-meta); cursor: pointer; }
 .side-host:hover { background: var(--hover); color: var(--text); }
 .side-host-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* connection dot — green live, red (pulsing) when the stream is down. Reused by
@@ -107,7 +112,7 @@ body {
 /* one scroll container for everything under the brand (buttons + sessions);
    the top padding clears the floating brand, contain keeps a pull at the top
    from chaining into the page's own pull-to-refresh */
-.side-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-top: 78px; overscroll-behavior-y: contain; }
+.side-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-top: 94px; overscroll-behavior-y: contain; }
 /* no visible scrollbar: it takes layout width, which shrank the full-width
    rows (same reason the popovers below hide theirs) */
 .side-scroll { scrollbar-width: none; }
@@ -219,6 +224,9 @@ body {
    the row height unchanged) */
 .group-add { flex: none; display: inline-flex; align-items: center; justify-content: center; border: 0; background: none; color: var(--text); cursor: pointer; font-size: 20px; line-height: 1; padding: 5px 8px; margin: -5px -4px; border-radius: 8px; }
 .group-add:hover { background: var(--hover); }
+/* a registered project with no chats under the selected agent — indented to sit
+   with the rows it stands in for */
+.group-empty { padding: 6px 14px 10px 34px; font-size: 12px; color: var(--muted); }
 
 /* session row: optional folder badge under the title (flat "All chats" view) */
 .s-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
@@ -236,6 +244,12 @@ body {
    accent. Select project now lives in that menu, so this is a single button. */
 .side-new-solo { display: flex; align-items: center; gap: 9px; width: calc(100% - 16px); margin: 0 8px 4px; padding: .8em 12px; border: 0; border-radius: 10px; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); font: inherit; font-size: var(--fs-row); font-weight: 600; text-align: left; cursor: pointer; }
 .side-new-solo:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+/* creating a chat: the + swaps for a spinner and every other "start a chat"
+   affordance goes quiet until the round trip lands */
+.side-new-ico { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; }
+.side-new-solo:disabled { cursor: default; }
+.side-new-ico .spinner { width: 14px; height: 14px; border-width: 2px; }
+#sidebar.creating .group-add { opacity: .45; pointer-events: none; }
 /* agent tabs — the home page's top-level choice. Which agent you're talking to
    is decided HERE (new chats use it, the list filters by it); the chat page
    has no agent picker. Hidden when only one agent is registered. */
@@ -451,7 +465,7 @@ body {
 .picker { position: relative; }
 /* Model picker — lives with the composer now. A quiet text chip (no pill fill),
    so it reads as a setting line rather than competing with Send. */
-.composer-picker { display: flex; padding: 0 2px 4px; }
+.composer-picker { display: flex; min-width: 0; padding: 0; }
 .picker { position: relative; }
 .picker-trigger { display: flex; align-items: center; gap: 5px; font: inherit; font-size: 12.5px; font-weight: 600; background: none; color: var(--muted); border: 0; border-radius: 8px; padding: 4px 8px; cursor: pointer; max-width: 210px; transition: background .12s, color .12s; }
 .picker-trigger:hover { background: var(--hover); color: var(--text); }
@@ -784,8 +798,13 @@ body {
 /* inside the native app the shell already pads for the system bar — keep the
    composer as tight to the bottom as it is on desktop web */
 .native-app .composer { padding-bottom: 10px; }
-.composer-bar { position: relative; display: flex; gap: 6px; align-items: center; background: var(--panel); border: 1px solid var(--border); border-radius: 26px; padding: 6px; box-shadow: 0 1px 2px rgba(0,0,0,.18); transition: border-color .12s; }
-.composer-bar.multiline { align-items: flex-end; } /* >2 lines: buttons hug the bottom */
+/* Two stacked rows: the input, then the control row (+ · model · send). The box
+   is therefore two rows tall at rest instead of one. */
+.composer-bar { position: relative; display: flex; flex-direction: column; gap: 4px; background: var(--panel); border: 1px solid var(--border); border-radius: 26px; padding: 6px; box-shadow: 0 1px 2px rgba(0,0,0,.18); transition: border-color .12s; }
+.composer-controls { display: flex; align-items: center; gap: 6px; }
+/* the model picker takes the middle, pushing send to the end of the row */
+.composer-controls .composer-picker { flex: 1; min-width: 0; }
+.composer-controls .btn.send { margin-left: auto; }
 .composer-bar:focus-within { border-color: var(--accent); }
 /* while a permission / question card is up, the composer is disabled */
 .composer.blocked .composer-bar { opacity: .55; }
@@ -810,7 +829,7 @@ body {
 /* contenteditable div, not a textarea (see Composer.js — only an editable
    region can receive keyboard-committed clipboard images). Grows natively,
    scrolls past max-height; the placeholder paints from the data attribute. */
-#input { flex: 1; min-width: 0; max-height: 180px; overflow-y: auto; font: inherit; background: none; color: var(--text); border: 0; border-radius: 0; padding: 6px; outline: none; caret-color: var(--accent); white-space: pre-wrap; overflow-wrap: anywhere; }
+#input { width: 100%; min-width: 0; max-height: 180px; overflow-y: auto; font: inherit; background: none; color: var(--text); border: 0; border-radius: 0; padding: 6px; outline: none; caret-color: var(--accent); white-space: pre-wrap; overflow-wrap: anywhere; }
 #input:empty::before { content: attr(data-placeholder); color: var(--muted); pointer-events: none; }
 .btn.send, .btn.attach { width: 36px; height: 36px; border-radius: 50%; border: 0; font-size: 18px; flex: none; display: flex; align-items: center; justify-content: center; padding: 0; }
 .btn.attach { background: none; color: var(--text); font-size: 20px; font-weight: 600; }
@@ -857,9 +876,10 @@ body {
 /* small "Reconnecting…" pill — pinned top-center, shown only on the home page
    (body.nav-open on phones; the sidebar is always visible on desktop). One quiet
    line, no escalation. (Mirrors the Android ConnectionBanner.) */
-.conn-banner { position: fixed; left: 50%; top: calc(10px + env(safe-area-inset-top, 0px)); transform: translateX(-50%); z-index: 140; display: none; align-items: center; gap: 7px; max-width: 90vw; background: var(--panel); color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 5px 12px; font-size: 12px; box-shadow: 0 8px 30px rgba(0,0,0,.35); }
-body.nav-open .conn-banner:not([hidden]) { display: flex; }
-@media (min-width: 761px) { .conn-banner:not([hidden]) { display: flex; } }
+/* Inline at the end of the sidebar host row (see .side-host-row) — no longer a
+   floating overlay, so no fixed position, z-index or drop shadow. */
+.conn-banner { display: none; align-items: center; gap: 6px; max-width: 100%; background: var(--panel); color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; font-size: 12px; white-space: nowrap; }
+.conn-banner:not([hidden]) { display: inline-flex; }
 .conn-banner .spinner { width: 12px; height: 12px; border-width: 2px; }
 
 /* ---- first-run guide: spotlight + explainer card ---- */
@@ -883,7 +903,13 @@ body.nav-open .conn-banner:not([hidden]) { display: flex; }
 /* The image fills the whole page; the two buttons float over it, mirroring the
    topbar's round menu button — same size, style, and screen position (close on
    the left where the menu button sits, download mirrored on the right). */
-.lb-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; padding: 0; touch-action: none; -webkit-user-drag: none; transform: translate3d(var(--lb-x, 0), var(--lb-y, 0), 0) scale(var(--lb-zoom, 1)); transform-origin: center; will-change: transform; }
+/* --lb-swipe tracks the finger while paging between gallery images; it's a
+   separate axis from --lb-x (the pan offset, which only exists when zoomed). */
+.lb-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; padding: 0; touch-action: none; -webkit-user-drag: none; transform: translate3d(calc(var(--lb-x, 0px) + var(--lb-swipe, 0px)), var(--lb-y, 0px), 0) scale(var(--lb-zoom, 1)); transform-origin: center; will-change: transform; }
+.lb-img.settling { transition: transform .18s ease-out; }
+/* "3 / 12" — only shown when there's somewhere to swipe to */
+.lb-count { position: absolute; left: 50%; bottom: calc(14px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); z-index: 2; color: var(--muted); background: var(--panel); border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; font-size: 12px; pointer-events: none; }
+.lb-count[hidden] { display: none; }
 .lb-img.zoomed { cursor: grab; }
 .lb-img.dragging { cursor: grabbing; }
 .lb-bar { position: absolute; top: 10px; left: 12px; right: 12px; z-index: 2; display: flex; justify-content: space-between; }

@@ -62,8 +62,9 @@ function ensureLightbox() {
   // Circular icon buttons: Close on the left, Download on the right.
   const dl = el("button", { class: "lb-btn", type: "button", title: "Download", "aria-label": "Download" }, icon("download"));
   const close = el("button", { class: "lb-btn lb-close", type: "button", title: "Close", "aria-label": "Close" }, icon("x"));
+  const count = el("div", { class: "lb-count", hidden: "" });
   const overlay = el("div", { class: "lb-overlay", hidden: "" },
-    el("div", { class: "lb-bar" }, close, dl), img);
+    el("div", { class: "lb-bar" }, close, dl), img, count);
 
   const MIN_ZOOM = 1, MAX_ZOOM = 7, ZOOM_STEP = .5;
   let zoom = MIN_ZOOM, panX = 0, panY = 0;
@@ -113,6 +114,47 @@ function ensureLightbox() {
   close.addEventListener("click", hide);
   overlay.addEventListener("click", (e) => { if (e.target === overlay) hide(); }); // tap the backdrop to close
   dl.addEventListener("click", () => downloadFile(lb.url, lb.name));
+
+  // ---- gallery paging -------------------------------------------------------
+  // Opening one picture from a grid shouldn't mean closing it to see the next.
+  // The viewer holds the whole set and a horizontal swipe moves through it. Zoom
+  // wins: while zoomed in, the drag pans the image and never turns the page.
+  const SWIPE_MIN = 60; // px before a drag counts as a page turn
+  const setSwipe = (px) => img.style.setProperty("--lb-swipe", `${px}px`);
+  const settle = () => {
+    img.classList.add("settling");
+    setSwipe(0);
+    setTimeout(() => img.classList.remove("settling"), 200);
+  };
+  // Show `i` from the current gallery. Out-of-range indexes just settle back, so
+  // swiping past either end reads as a soft edge instead of a dead end.
+  const showAt = (i) => {
+    const items = lb.items;
+    if (!items.length || i < 0 || i >= items.length) return settle();
+    lb.index = i;
+    const it = items[i];
+    lb.url = it.url; lb.name = it.name || "";
+    resetZoom();
+    setSwipe(0);
+    img.src = it.url;
+    img.alt = it.name || "";
+    paintCount();
+  };
+  const paintCount = () => {
+    if (lb.items.length > 1) {
+      count.textContent = `${lb.index + 1} / ${lb.items.length}`;
+      count.removeAttribute("hidden");
+    } else {
+      count.setAttribute("hidden", "");
+    }
+  };
+  document.addEventListener("keydown", (e) => {
+    if (overlay.hasAttribute("hidden")) return;
+    if (e.key === "Escape") return hide();
+    if (zoom > MIN_ZOOM || lb.items.length < 2) return;
+    if (e.key === "ArrowRight") showAt(lb.index + 1);
+    else if (e.key === "ArrowLeft") showAt(lb.index - 1);
+  });
   img.addEventListener("load", paintZoom);
   img.addEventListener("wheel", (e) => {
     e.preventDefault();
@@ -161,30 +203,49 @@ function ensureLightbox() {
       panX = gesture.panX + points[0].x - gesture.x;
       panY = gesture.panY + points[0].y - gesture.y;
       paintZoom();
+    } else if (points.length === 1 && gesture?.type === "pan" && lb.items.length > 1) {
+      // At rest zoom a horizontal drag pages the gallery — the image tracks the
+      // finger so the swipe is visible before it commits.
+      gesture.dx = points[0].x - gesture.x;
+      setSwipe(gesture.dx);
     }
   });
   const endPointer = (e) => {
+    // A committed swipe (far enough, at rest zoom) turns the page; anything
+    // shorter springs back.
+    const dx = gesture?.type === "pan" ? (gesture.dx || 0) : 0;
+    const swiping = zoom === MIN_ZOOM && lb.items.length > 1 && pointers.size === 1;
     pointers.delete(e.pointerId);
     beginGesture();
     if (!pointers.size) img.classList.remove("dragging");
+    if (swiping && !pointers.size) {
+      if (Math.abs(dx) >= SWIPE_MIN) showAt(lb.index + (dx < 0 ? 1 : -1));
+      else settle();
+    }
   };
   img.addEventListener("pointerup", endPointer);
   img.addEventListener("pointercancel", endPointer);
   window.addEventListener("resize", paintZoom);
   document.body.appendChild(overlay);
-  lb = { overlay, img, resetZoom, url: "", name: "" };
+  lb = { overlay, img, resetZoom, url: "", name: "", items: [], index: 0, showAt, paintCount };
   resetZoom();
   return lb;
 }
 
-// Open an image full-size in the in-app viewer.
-export function openImage(url, name) {
+/**
+ * Open an image full-size in the in-app viewer.
+ *
+ * `gallery` (optional) is the set the image belongs to — [{ url, name }] — and
+ * makes the viewer swipeable/arrow-navigable across it. Called with just a url
+ * and name, the viewer holds that one image, exactly as before.
+ */
+export function openImage(url, name, gallery) {
   if (!url) return;
   const v = ensureLightbox();
-  v.url = url; v.name = name || "";
-  v.resetZoom();
-  v.img.src = url;
-  v.img.alt = name || "";
+  const items = Array.isArray(gallery) && gallery.length ? gallery : [{ url, name: name || "" }];
+  const at = Math.max(0, items.findIndex((i) => i.url === url));
+  v.items = items;
+  v.showAt(at);
   v.overlay.removeAttribute("hidden");
 }
 

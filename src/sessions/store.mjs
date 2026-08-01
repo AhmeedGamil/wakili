@@ -19,10 +19,17 @@ let onSave = null;
 export function onSessionSave(fn) { onSave = fn; }
 
 export const sessionStore = {
-  async create({ agentId = "claude", model = config.defaultModel, cwd = null } = {}) {
+  // `draft` — a chat that was opened but never written in. It's a real session
+  // (it owns an id from the start, so the client's streams, uploads and control
+  // plumbing all work) but it stays OUT of list(), so opening "New chat" and
+  // backing out doesn't leave an empty row behind. The first user message clears
+  // the flag, which is the moment the chat becomes real. Handoffs and any other
+  // path that starts a session WITH content pass draft: false.
+  async create({ agentId = "claude", model = config.defaultModel, cwd = null, draft = false } = {}) {
     const now = Date.now();
     const session = {
       id: crypto.randomUUID(),
+      draft: !!draft,
       title: "New chat",
       agentId,
       model,
@@ -105,7 +112,11 @@ export const sessionStore = {
     return recovered;
   },
 
-  /** Lightweight list for the sidebar (no message bodies), newest first. */
+  /**
+   * Lightweight list for the sidebar (no message bodies), newest first.
+   * Drafts are omitted: a chat the user opened but never wrote in isn't a chat
+   * yet, and listing it is what used to fill the sidebar with "New chat" rows.
+   */
   async list() {
     let files = [];
     try { files = await fsp.readdir(config.dataDir); } catch { return []; }
@@ -114,11 +125,69 @@ export const sessionStore = {
       if (!f.endsWith(".json") || f.endsWith(".turn.json")) continue; // skip pending-turn sidecars
       try {
         const s = JSON.parse(await fsp.readFile(path.join(config.dataDir, f), "utf8"));
+        if (s.draft) continue;
         // model: what the session actually runs with — the last picked control
         // value wins over the create-time default.
         out.push({ id: s.id, title: s.title, agentId: s.agentId, model: (s.controls && s.controls.model) || s.model, cwd: s.cwd || null, updatedAt: s.updatedAt });
       } catch { /* skip corrupt */ }
     }
     return out.sort((a, b) => b.updatedAt - a.updatedAt);
+  },
+
+  /**
+   * Every agent-side resume id Wakili owns. The host-session list subtracts
+   * these: a transcript with one of these ids isn't a session started on the
+   * host, it's one of THIS user's chats seen from the CLI's side.
+   */
+  async listResumeIds() {
+    let files = [];
+    try { files = await fsp.readdir(config.dataDir); } catch { return []; }
+    const out = [];
+    for (const f of files) {
+      if (!f.endsWith(".json") || f.endsWith(".turn.json")) continue;
+      try {
+        const s = JSON.parse(await fsp.readFile(path.join(config.dataDir, f), "utf8"));
+        if (s.resumeId) out.push(s.resumeId);
+      } catch { /* skip corrupt */ }
+    }
+    return out;
+  },
+
+  /** The session bound to `resumeId`, if one exists (adopting is idempotent). */
+  async findByResumeId(resumeId) {
+    if (!resumeId) return null;
+    let files = [];
+    try { files = await fsp.readdir(config.dataDir); } catch { return null; }
+    for (const f of files) {
+      if (!f.endsWith(".json") || f.endsWith(".turn.json")) continue;
+      try {
+        const s = JSON.parse(await fsp.readFile(path.join(config.dataDir, f), "utf8"));
+        if (s.resumeId === resumeId) return s;
+      } catch { /* skip corrupt */ }
+    }
+    return null;
+  },
+
+  /**
+   * Sweep abandoned drafts — chats opened but never written in, whose client is
+   * long gone. Only drafts with no messages and older than `maxAgeMs` are
+   * removed, so a draft the user is sitting in right now survives a gateway
+   * restart and can still take its first message.
+   */
+  async pruneDrafts(maxAgeMs = 24 * 60 * 60 * 1000) {
+    let files = [];
+    try { files = await fsp.readdir(config.dataDir); } catch { return 0; }
+    const cutoff = Date.now() - maxAgeMs;
+    let removed = 0;
+    for (const f of files) {
+      if (!f.endsWith(".json") || f.endsWith(".turn.json")) continue;
+      try {
+        const s = JSON.parse(await fsp.readFile(path.join(config.dataDir, f), "utf8"));
+        if (!s.draft || (s.messages && s.messages.length) || s.updatedAt > cutoff) continue;
+        await this.remove(s.id);
+        removed++;
+      } catch { /* skip corrupt */ }
+    }
+    return removed;
   },
 };

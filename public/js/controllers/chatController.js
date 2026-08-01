@@ -355,6 +355,7 @@ export function createChatController({ api, store, emitter }) {
   // folder is chosen at creation time — changing it later resets the resume thread.
   async function newSession(cwd, agentId) {
     const s = await api.createSession({ agentId: agentId || store.get().agentId, cwd: cwd || null });
+    if (cwd) refreshProjects(); // first chat in a folder also registers it
     await refreshSessions();
     await openSession(s.id);
     // Pin the defaults this chat opened with — otherwise an untouched new chat
@@ -463,9 +464,34 @@ export function createChatController({ api, store, emitter }) {
   // last. The gateway also reads the saved permissionMode per permission card,
   // so a mid-turn mode flip counts from the very next card. Fire-and-forget:
   // if it doesn't land, the send-time persist still applies.
-  function persistControls() {
+  // The agent is NOT ours to change as a side effect. The gateway resets the
+  // session's resume thread the moment agentId differs (the PATCH handler nulls
+  // resumeId — same semantics as runTurn), so a stray agentId here silently
+  // destroys the native thread behind something as small as a permission-mode
+  // tweak. st.agentId is the CLIENT's currently-selected agent and drifts from
+  // the open session's own agent (home-page tabs, last-used restored at boot),
+  // so it is the wrong thing to send. Default to the session's own agent; only
+  // a caller deliberately switching passes one in.
+  function persistControls(opts) {
     const st = store.get();
-    if (st.activeId) api.saveControls(st.activeId, st.agentId, st.controls).catch(() => {});
+    if (!st.activeId) return;
+    const own = st.activeSession && st.activeSession.id === st.activeId ? st.activeSession.agentId : null;
+    const agentId = (opts && opts.agentId) || own || st.agentId;
+    api.saveControls(st.activeId, agentId, st.controls).catch(() => {});
+  }
+
+  // Does the open chat already have messages? Deciding this from client state
+  // alone is what let an in-place switch through on a chat that had history:
+  // activeSession can be absent or stale (opened from cache, fetch still in
+  // flight, restored session on boot). "unknown" is never treated as "empty" —
+  // an unnecessary handoff is recoverable, a destroyed resume thread is not.
+  async function historyState(id) {
+    const st = store.get();
+    const cur = st.activeSession;
+    if (cur && cur.id === id) return { known: true, session: cur };
+    let r = null;
+    try { r = await sessionCache.fetch(id); } catch { /* unknown below */ }
+    return r && r.session ? { known: true, session: r.session } : { known: false, session: null };
   }
 
   function setControl(key, value) {
@@ -488,54 +514,70 @@ export function createChatController({ api, store, emitter }) {
     });
   }
 
-  // Switching agent on a chat that already has messages can't carry the native
-  // thread across (resume ids are per-agent). Instead: the server exports the
-  // transcript to a handoff file and creates a NEW chat for the new agent (same
-  // folder); we open it and prefill the composer with the file attached — the
-  // new agent reads it for context on the first turn. Nothing sends until the
-  // user hits Send, and the old chat stays intact (reopening it resumes natively).
+  // Switching agent happens IN PLACE: you stay in the same chat and its history
+  // stays on screen. What can't come along is the native thread — resume ids are
+  // per-agent, so the gateway starts the new agent fresh. To bridge that, the
+  // server exports the transcript so far and we attach it to the composer with a
+  // suggested first message; the new agent reads it for context on its first
+  // turn. Nothing sends until the user hits Send.
   async function continueWithAgent(cur, agentId, model) {
     const agent = store.get().agents.find((a) => a.id === agentId);
     const label = agent ? agent.label : agentId;
-    emitter.emit("toast", `Switching to ${label} — moving this conversation to a new chat…`);
+    emitter.emit("toast", `Switching to ${label}…`);
     let r = null;
-    try { r = await api.handoff(cur.id, agentId); } catch { /* toast below */ }
+    try { r = await api.switchAgent(cur.id, agentId); } catch { /* toast below */ }
     if (!r || !r.session) return emitter.emit("toast", "Couldn't switch agent — check the connection");
-    await refreshSessions();
-    await openSession(r.session.id);
+    // The stored agent and controls just changed underneath the cache.
+    sessionCache.delete(cur.id);
+    await openSession(cur.id); // same chat — re-applied with the new agent's defaults
     if (model) store.set((s) => ({ controls: { ...s.controls, model } }));
     saveLastConfig();
-    persistControls();
-    emitter.emit("handoff", { file: r.file });
-    emitter.emit("toast", `Now chatting with ${label} — the transcript is attached, press Send to continue`);
+    persistControls({ agentId });
+    await refreshSessions();
+    if (r.file) {
+      emitter.emit("handoff", { file: r.file });
+      emitter.emit("toast", `Now chatting with ${label} — the transcript is attached, press Send to continue`);
+    } else {
+      emitter.emit("toast", `Now chatting with ${label}`);
+    }
   }
 
   // An empty chat just switches in place, as before.
-  function setAgent(id) {
+  async function setAgent(id) {
     const st = store.get();
-    const cur = st.activeSession;
-    if (cur && (cur.messages || []).length && id !== cur.agentId) return continueWithAgent(cur, id);
-    const agent = st.agents.find((a) => a.id === id);
+    if (st.activeId) {
+      const h = await historyState(st.activeId);
+      if (!h.known) return emitter.emit("toast", "Can't switch agent — this chat isn't loaded yet");
+      if ((h.session.messages || []).length && id !== h.session.agentId) return continueWithAgent(h.session, id);
+    }
+    const agent = store.get().agents.find((a) => a.id === id);
     store.set({ agentId: id, controls: defaultsFor(agent) });
     saveLastConfig();
-    persistControls();
+    persistControls({ agentId: id }); // deliberate switch — this one may move the session
   }
 
   // Pick a model from the tree: switching agent on a non-empty chat goes through
   // the handoff flow (carrying the picked model); on an empty chat it resets that
   // agent's controls to defaults; within the same agent, just change the model.
-  function pickModel(agentId, model) {
+  async function pickModel(agentId, model) {
     const st = store.get();
+    let switching = false;
     if (agentId !== st.agentId) {
-      const cur = st.activeSession;
-      if (cur && (cur.messages || []).length && agentId !== cur.agentId) return continueWithAgent(cur, agentId, model);
-      const agent = st.agents.find((a) => a.id === agentId);
+      if (st.activeId) {
+        const h = await historyState(st.activeId);
+        if (!h.known) return emitter.emit("toast", "Can't switch agent — this chat isn't loaded yet");
+        if ((h.session.messages || []).length && agentId !== h.session.agentId) {
+          return continueWithAgent(h.session, agentId, model);
+        }
+      }
+      switching = true;
+      const agent = store.get().agents.find((a) => a.id === agentId);
       store.set({ agentId, controls: defaultsFor(agent, { model }) });
     } else {
       store.set((s) => ({ controls: { ...s.controls, model } }));
     }
     saveLastConfig();
-    persistControls();
+    persistControls(switching ? { agentId } : undefined);
   }
 
   function answerPermission(requestId, decision, tool) {
@@ -552,10 +594,28 @@ export function createChatController({ api, store, emitter }) {
 
   // Project-folder picker: browse the laptop FS, then set the active session's cwd.
   const browseFolders = (path) => api.folders(path);
-  const createFolder = (parent, name) => api.createFolder(parent, name);
+  // Creating a folder registers it as a project server-side — pull the new list
+  // so it appears under every agent immediately, before any chat exists in it.
+  const createFolder = async (parent, name) => {
+    const r = await api.createFolder(parent, name);
+    refreshProjects();
+    return r;
+  };
 
   // The global files registry (uploads + agent-sent), shown in the sidebar.
   async function refreshFiles() { try { store.set({ allFiles: await api.files() }); } catch { /* ignore */ } }
+
+  // Known projects — gateway-owned and agent-independent, so the sidebar can
+  // show every project under every agent tab instead of only the folders that
+  // the selected agent already has chats in.
+  async function refreshProjects() { try { store.set({ projects: await api.projects() }); } catch { /* keep the last list */ } }
+
+  // Remove a project from the list only — the folder and its chats stay put, so
+  // this is safe to offer without a confirmation.
+  async function forgetProject(path) {
+    try { await api.forgetProject(path); } catch { return emitter.emit("toast", "Couldn't remove — check the connection"); }
+    refreshProjects();
+  }
 
   // Undo an eager upload: the user removed the attachment before sending, so
   // delete the file from the laptop and drop it from the sidebar files list.
@@ -568,6 +628,7 @@ export function createChatController({ api, store, emitter }) {
     if (!id) return;
     const s = await api.setCwd(id, cwd);
     if (s && s.id) store.set({ activeSession: s });
+    refreshProjects(); // the gateway just registered this folder — show it everywhere
   }
 
   async function init() {
@@ -586,6 +647,7 @@ export function createChatController({ api, store, emitter }) {
     await loadAgents();
     await refreshSessions();
     refreshFiles();
+    refreshProjects();
     device.refreshPower();
     device.refreshAutostart();
     const list = store.get().sessions;
@@ -614,7 +676,7 @@ export function createChatController({ api, store, emitter }) {
     init, openSession, newSession, renameSession, deleteSession, refreshSessions,
     send, execTerm, stopActive, cancelQueued, setControl, setAutoAllow, setAgent,
     pickModel, answerPermission, answerQuestion, browseFolders, createFolder,
-    setCwd, removeUpload,
+    setCwd, removeUpload, refreshProjects, forgetProject,
     // Device controls (Settings → Device rows render through these).
     lockScreen: device.lockScreen, screenOff: device.screenOff,
     shutdownComputer: device.shutdownComputer, setKeepAwake: device.setKeepAwake,

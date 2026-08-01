@@ -43,28 +43,21 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
   const addMenu = el("div", { class: "add-menu", hidden: "" }); // + button: Add files / Terminal
   const queued = el("div", { class: "queued", hidden: "" }); // pending message shown while busy
 
-  // The add-menu lives inside the bar so it can float anchored above the + button
-  // (absolutely positioned — it takes no layout space and covers nothing else).
-  const bar = el("div", { class: "composer-bar" }, addMenu, attachBtn, input, send);
-  // The model picker lives here now (not the topbar) — with the other per-turn
-  // controls. main.js drops the picker element into this slot.
+  // Two rows inside one box: what you write on top, everything you press
+  // underneath — so the box opens two rows tall and typing never shares its line
+  // with the buttons. The model picker sits in that button row beside +, where
+  // the rest of the per-turn controls are; main.js drops the picker element into
+  // the slot. The add-menu stays inside the bar so it can float anchored above
+  // the + button (absolutely positioned — it takes no layout space).
   const pickerSlot = el("div", { class: "composer-picker" });
-  const root = el("form", { id: "composer", class: "composer" }, menu, queued, chips, pickerSlot, bar, fileInput, imgInput);
+  const controls = el("div", { class: "composer-controls" }, addMenu, attachBtn, pickerSlot, send);
+  const bar = el("div", { class: "composer-bar" }, input, controls);
+  const root = el("form", { id: "composer", class: "composer" }, menu, queued, chips, bar, fileInput, imgInput);
 
   // A contenteditable auto-grows natively — ZERO JS measurement on the typing
-  // path. The multiline class is driven by a ResizeObserver, which fires after
-  // layout only when the box's size actually changed (no forced reflow).
-  {
-    let line = 0;
-    new ResizeObserver((entries) => {
-      const h = entries[entries.length - 1].contentRect.height;
-      if (!line) {
-        const cs = getComputedStyle(input);
-        line = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.4;
-      }
-      bar.classList.toggle("multiline", Math.round(h / line) > 1);
-    }).observe(input);
-  }
+  // path. The old ResizeObserver existed only to re-align the buttons once the
+  // input wrapped past one line; the buttons have their own row now, so nothing
+  // has to watch the input's height.
   const autoSize = () => {}; // sizing is native; kept for the call sites
 
   // Is there something to send (typed text or a pending attachment)?

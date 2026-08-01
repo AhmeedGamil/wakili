@@ -1,8 +1,8 @@
 // One picker. Closed, it shows the current model (e.g. "GPT-5.5"). Open, it's a
 // stack of modern dropdowns: Model, then the agent's other settings. The AGENT
 // is not here — it's chosen on the home page and fixed per chat. What remains
-// is "Continue with <other agent>" at the bottom: the handoff flow, which
-// exports this chat's transcript into a NEW chat for that agent.
+// is "Continue with <other agent>" at the bottom: it moves THIS chat to that
+// agent, keeping the history, and carries the transcript over as context.
 
 import { el, dismissFirst, backdropFor } from "./dom.js";
 import { createDropdown } from "./Dropdown.js";
@@ -50,10 +50,9 @@ export function createModelPicker({ onSwitchAgent, onPickModel, onControlChange,
     swRow.addEventListener("click", (e) => { e.stopPropagation(); onToggleAutoAllow(!autoAllow); });
     pop.appendChild(swRow);
 
-    // Handoff: this chat's agent is fixed, but the conversation can move. One
-    // expandable "Continue with" dropdown (like the controls above) whose options
-    // are the OTHER agents; picking one opens a new chat for it with the
-    // transcript attached. No preset value — it's an action list.
+    // One expandable "Continue with" dropdown (like the controls above) whose
+    // options are the OTHER agents; picking one hands this chat to that agent
+    // in place, with the transcript attached. No preset value — an action list.
     const others = agents.filter((a) => a.id !== agentId);
     if (others.length) {
       mk({

@@ -20,11 +20,17 @@ import { el, dismissFirst, backdropFor } from "./dom.js";
 import { icon } from "./icons.js";
 import { KEYS, getPref, setPref, getJSON, setJSON, putSession } from "../core/prefs.js";
 
-export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDelete, onRename, onOpenFiles, onAppearance, onOpenConnect, onRetrySessions }) {
+export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDelete, onRename, onOpenFiles, onAppearance, onOpenConnect, onRetrySessions, onLoadHost, onAdoptHost }) {
   let view = getPref(KEYS.sessionView) === "all" ? "all" : "project";
   let showModel = getPref(KEYS.sessionModel) === "1";
   let tabAgent = getPref(KEYS.homeAgent) || "claude"; // the selected agent tab — new chats use it, the list filters by it
-  let last = { sessions: [], activeId: null, busyIds: {}, unreadIds: {}, agents: [], sessionsState: "loading" }; // cached for re-render on toggle
+  // The list opens at the latest few and grows on demand, so a long history
+  // never costs a wall of rows before the chat you actually want.
+  const PAGE = 5;
+  let ownShown = PAGE;
+  // "From the host" section state (lazily loaded — see renderHostSection).
+  const host = { open: getPref(KEYS.hostOpen) === "1", rows: [], cursor: "", total: 0, loading: false, loaded: false, error: false, adopting: new Set() };
+  let last = { sessions: [], activeId: null, busyIds: {}, unreadIds: {}, agents: [], projects: [], sessionsState: "loading" }; // cached for re-render on toggle
 
   // Agent tabs: the agent is chosen HERE, on the home page — the chat page
   // never shows an agent picker. Segmented buttons from the agents manifest;
@@ -40,7 +46,16 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
     for (const a of agents) {
       tabs.appendChild(el("button", {
         class: a.id === tabAgent ? "on" : "", type: "button", text: a.label,
-        onClick: () => { if (a.id === tabAgent) return; tabAgent = a.id; setPref(KEYS.homeAgent, tabAgent); renderTabs(); renderSessions(); },
+        onClick: () => {
+          if (a.id === tabAgent) return;
+          tabAgent = a.id; setPref(KEYS.homeAgent, tabAgent);
+          // A different agent is a different list: start both back at page one
+          // rather than showing this agent's chats under the other's paging.
+          ownShown = PAGE;
+          host.rows = []; host.cursor = ""; host.total = 0; host.loaded = false;
+          renderTabs(); renderSessions();
+          if (host.open) loadHost(true);
+        },
       }));
     }
   }
@@ -75,8 +90,20 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
   // "New chat": THE primary action, so it sits first and reads accent. A split
   // button — the wide half starts a chat in the last selected project (no
   // picker), the folder half opens the picker for "somewhere else".
+  // Creating a chat is a round trip: on a slow link the button used to sit there
+  // looking untouched until the chat suddenly opened. The tap answers at once —
+  // the + becomes a spinner and the button stops taking clicks until it lands.
+  const newIco = el("span", { class: "side-new-ico" }, icon("plus"));
   const newBtn = el("button", { class: "side-new side-new-solo", type: "button", onClick: onNewLast },
-    icon("plus"), el("span", { text: "New chat" }));
+    newIco, el("span", { text: "New chat" }));
+  // Driven by main.js around the create call, so every entry point that starts a
+  // chat (this button, the picker, a group's +) shows the same busy state.
+  function setCreating(on) {
+    newBtn.disabled = !!on;
+    root.classList.toggle("creating", !!on);
+    newIco.innerHTML = "";
+    newIco.appendChild(on ? el("span", { class: "spinner" }) : icon("plus"));
+  }
 
   // Long-press (touch) or right-click menu on a session row: Rename / Delete.
   // Delete opens a centered confirmation dialog. The menu is attached to <body>
@@ -168,6 +195,10 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
   const hostName = el("span", { class: "side-host-name", text: location.host });
   const setHost = (name) => { if (name) hostName.textContent = name; };
   const hostRow = el("button", { class: "side-host", type: "button", title: "Switch connection", onClick: () => onOpenConnect && onOpenConnect() }, hostDot, hostName);
+  // The reconnect pill rides the END of the host row (main.js mounts it here)
+  // rather than floating over the page: the status belongs to the host it
+  // describes, and nothing below has to leave a gap for it.
+  const connSlot = el("div", { class: "side-host-slot" });
 
   // The floating brand: [logo Wakili …… ☰] over the host row.
   const brand = el("div", { class: "side-brand" },
@@ -175,7 +206,7 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
       el("span", { class: "brand-logo", "aria-hidden": "true" }),
       el("span", { class: "brand-name", text: "Wakili" }),
       el("div", { class: "brand-menu-wrap" }, menuBtn, menu)),
-    hostRow);
+    el("div", { class: "side-host-row" }, hostRow, connSlot));
   dismissFirst(() => !menu.hidden, (t) => brand.contains(t), closeMenu);
 
   // Everything below the brand scrolls as one column; the brand floats over it
@@ -233,8 +264,8 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
     modelItem.classList.toggle("on", showModel);
   }
 
-  function render({ sessions, activeId, busyIds = {}, files = [], unreadIds = {}, agents = [], sessionsState = "ready", connected = true }) {
-    last = { sessions: sessions || [], activeId, busyIds, unreadIds, agents: agents || [], sessionsState };
+  function render({ sessions, activeId, busyIds = {}, files = [], unreadIds = {}, agents = [], projects = [], sessionsState = "ready", connected = true }) {
+    last = { sessions: sessions || [], activeId, busyIds, unreadIds, agents: agents || [], projects: projects || [], sessionsState };
     brandFilesCount.textContent = String(files.length);
     hostDot.classList.toggle("off", !connected);
     renderTabs();
@@ -310,33 +341,59 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
         el("button", { class: "btn", type: "button", onClick: () => onRetrySessions && onRetrySessions() }, "Try again")));
       return;
     }
-    // The list loaded but this agent has nothing yet — point at New chat
-    // instead of showing a blank pane under the tabs.
-    if (!sessions.length) {
+    // The list loaded but this agent has nothing yet. In "By latest" there's
+    // genuinely nothing to draw — point at New chat. "By project" still has the
+    // project list to show (every project, for every agent), and each group's +
+    // starts the first chat there, so it falls through.
+    if (!sessions.length && (view === "all" || !last.projects.length)) {
       const label = last.agents.find((a) => a.id === tabAgent)?.label || "";
       list.appendChild(el("div", { class: "sess-note" },
         el("span", { text: `No ${label} chats yet — start one with New chat.` })));
       return;
     }
+    // Show the latest few and let the user ask for more, in BOTH views: the cap
+    // is applied to the flat newest-first list before grouping, so "the latest
+    // N" means the same thing either way.
+    const shown = sessions.slice(0, ownShown);
+    const moreOwn = sessions.length - shown.length;
+
     if (view === "all") {
       // Flat, newest-first (server order), each row tagged "folder · time-ago".
-      for (const s of sessions) {
+      for (const s of shown) {
         const folder = s.cwd ? baseName(s.cwd) : "Default project";
         const ago = timeAgo(s.updatedAt);
         list.appendChild(sessionRow(s, activeId, busyIds, unreadIds, ago ? folder + " · " + ago : folder));
       }
+      if (moreOwn > 0) list.appendChild(loadMoreBtn(moreOwn, () => { ownShown += PAGE; renderSessions(); }));
+      renderHostSection();
       return;
     }
     // By project: group by folder. The header collapses/expands its group
     // (persisted per device); only the + starts a chat there — a tap that
     // creates a session is too heavy a meaning for a whole header row.
-    const groups = new Map(); // label -> { cwd, items: [] }
-    for (const s of sessions) {
-      const label = s.cwd ? baseName(s.cwd) : "Default project";
-      if (!groups.has(label)) groups.set(label, { cwd: s.cwd || null, items: [] });
-      groups.get(label).items.push(s);
-    }
-    for (const [label, group] of groups) {
+    //
+    // Groups come from the gateway's project registry FIRST, not from the
+    // sessions on screen: a project belongs to the workspace, not to an agent,
+    // so every agent tab lists every project — including ones this agent has no
+    // chats in yet, and folders just created that have no chats at all. Sessions
+    // are then bucketed into those groups; any cwd not in the registry (an older
+    // session, or a folder since forgotten) still gets a group of its own so no
+    // chat can become unreachable.
+    const groups = new Map(); // key -> { cwd, label, items: [] }
+    const groupKey = (cwd) => (cwd ? String(cwd).replace(/[\\/]+$/, "").toLowerCase() : "");
+    const ensure = (cwd, label) => {
+      const k = groupKey(cwd);
+      if (!groups.has(k)) groups.set(k, { cwd: cwd || null, label: label || (cwd ? baseName(cwd) : "Default project"), items: [] });
+      return groups.get(k);
+    };
+    for (const s of shown) ensure(s.cwd);
+    for (const pr of last.projects) ensure(pr.path, pr.name);
+    // Projects with chats stay ordered by recency (the server sorts sessions
+    // newest first, so insertion order already carries it); empty ones sink to
+    // the bottom rather than pushing active work down.
+    const ordered = [...groups.values()].sort((a, b) => (b.items.length ? 1 : 0) - (a.items.length ? 1 : 0));
+    for (const group of ordered) {
+      const label = group.label;
       const key = group.cwd || "";
       const closed = collapsed.has(key);
       list.appendChild(el("div", {
@@ -350,8 +407,106 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
           class: "group-add", type: "button", title: "New chat in " + (group.cwd || "the default project"),
           onClick: (e) => { e.stopPropagation(); onNewInFolder(group.cwd); },
         }, icon("plus"))));
-      if (!closed) for (const s of group.items) list.appendChild(sessionRow(s, activeId, busyIds, unreadIds));
+      if (!closed) {
+        for (const s of group.items) list.appendChild(sessionRow(s, activeId, busyIds, unreadIds));
+        // A registered project this agent hasn't been used in yet. Say so, so an
+        // empty group reads as "nothing here yet" and not as a broken list.
+        if (!group.items.length) list.appendChild(el("div", { class: "group-empty", text: "No chats yet — tap + to start one." }));
+      }
     }
+    if (moreOwn > 0) list.appendChild(loadMoreBtn(moreOwn, () => { ownShown += PAGE; renderSessions(); }));
+    renderHostSection();
+  }
+
+  // "Load more (N)" — one recipe for both lists.
+  function loadMoreBtn(remaining, onClick, busy = false) {
+    return el("button", { class: "sess-more", type: "button", disabled: busy ? "" : null, onClick },
+      busy ? el("span", { class: "spinner" }) : null,
+      el("span", { text: busy ? "Loading…" : `Load more (${remaining})` }));
+  }
+
+  // ---- From the host --------------------------------------------------------
+  // Chats started in a terminal on the host machine. They live in their OWN
+  // section under your chats, never merged into them: work you do at the desk
+  // must never reorder the list you were just using on the phone. Collapsed by
+  // default and loaded only when opened — the scan is the gateway's to pay for,
+  // and only when asked.
+  function renderHostSection() {
+    if (!onLoadHost) return;
+    const open = host.open;
+    const head = el("div", { class: "group-head host-head" + (open ? "" : " closed"), onClick: toggleHost },
+      icon("chevron-right", "group-chev"),
+      icon("monitor", "host-ico"),
+      el("span", { class: "group-label", text: "From the host" }),
+      host.total ? el("span", { class: "group-count", text: String(host.total) }) : null);
+    list.appendChild(head);
+    if (!open) return;
+    if (host.error) {
+      list.appendChild(el("div", { class: "group-empty" },
+        el("span", { text: "Couldn't read the host's sessions. " }),
+        el("button", { class: "linkish", type: "button", onClick: () => loadHost(true) }, "Try again")));
+      return;
+    }
+    for (const s of host.rows) list.appendChild(hostRowEl(s));
+    if (host.loading) list.appendChild(el("div", { class: "group-empty" }, el("span", { class: "spinner" })));
+    else if (!host.rows.length) list.appendChild(el("div", { class: "group-empty", text: "No chats started on the host in your projects." }));
+    else if (host.cursor) list.appendChild(loadMoreBtn(Math.max(0, host.total - host.rows.length), () => loadHost(), false));
+  }
+
+  // A host row reads like a chat row but says where it came from, and tapping it
+  // ADOPTS it — the chat becomes yours and moves up into the list above.
+  function hostRowEl(s) {
+    const busy = host.adopting.has(s.id);
+    const folder = s.cwd ? baseName(s.cwd) : "Default project";
+    const ago = timeAgo(s.updatedAt);
+    const row = el("div", { class: "session host-row" + (busy ? " busy" : ""), title: "Continue this host chat here",
+      onClick: () => { if (!busy) adopt(s); } },
+      el("div", { class: "s-main" },
+        el("div", { class: "s-title", text: s.title }),
+        el("span", { class: "s-badge", text: ago ? folder + " · " + ago : folder })),
+      busy ? el("span", { class: "spinner" }) : icon("corner-up-left", "host-adopt"));
+    return row;
+  }
+
+  async function adopt(s) {
+    host.adopting.add(s.id);
+    renderSessions();
+    try {
+      await onAdoptHost(s.id);
+      // It's a Wakili chat now — drop it from this section rather than waiting
+      // for a refetch to notice.
+      host.rows = host.rows.filter((r) => r.id !== s.id);
+      host.total = Math.max(0, host.total - 1);
+    } catch { /* the row stays; the user can try again */ }
+    host.adopting.delete(s.id);
+    renderSessions();
+  }
+
+  function toggleHost() {
+    host.open = !host.open;
+    setPref(KEYS.hostOpen, host.open ? "1" : "0");
+    if (host.open && !host.loaded) loadHost();
+    else renderSessions();
+  }
+
+  // Fetch the next page (or restart from scratch after a tab switch / retry).
+  async function loadHost(reset = false) {
+    if (host.loading) return;
+    if (reset) { host.rows = []; host.cursor = ""; host.total = 0; }
+    host.loading = true;
+    host.error = false;
+    renderSessions();
+    try {
+      const page = await onLoadHost({ cursor: host.cursor || "", agentId: tabs.hidden ? "" : tabAgent, limit: PAGE });
+      host.rows = host.rows.concat(page.sessions || []);
+      host.cursor = page.nextCursor || "";
+      host.total = page.total || host.rows.length;
+      host.loaded = true;
+    } catch {
+      host.error = true;
+    }
+    host.loading = false;
+    renderSessions();
   }
 
   // Collapsed project groups, keyed by cwd ("" = default project); survives
@@ -385,5 +540,5 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
   // through the real close paths so the backdrop goes away with the menu.
   const menusOpen = () => !ctx.hidden || !pop.hidden || !menu.hidden;
   const closeMenus = () => { if (!ctx.hidden) closeCtx(); else if (!pop.hidden) closePop(); else closeMenu(); };
-  return { el: root, render, menusOpen, closeMenus, setHost, currentAgent: () => tabAgent };
+  return { el: root, render, menusOpen, closeMenus, setHost, setCreating, connSlot, currentAgent: () => tabAgent };
 }

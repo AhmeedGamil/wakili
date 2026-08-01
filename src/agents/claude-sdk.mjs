@@ -93,7 +93,16 @@ function disposeWarm(entry) {
   clearTimeout(entry.idleTimer);
   entry.alive = false;
   entry.channel.close();
-  try { entry.q && entry.q.interrupt && entry.q.interrupt(); } catch { /* already done */ }
+  // interrupt() is async: closing the channel above already let the query finish
+  // and its child exit, so the control request it writes lands on a dead stdin
+  // and rejects ("ProcessTransport is not ready for writing"). A bare try/catch
+  // only sees synchronous throws — without the .catch() that rejection is
+  // unhandled and takes the whole gateway down (it fires from the idle timer,
+  // i.e. long after the turn, with nothing on the stack to absorb it).
+  try {
+    const p = entry.q && entry.q.interrupt && entry.q.interrupt();
+    if (p && p.catch) p.catch(() => { /* already gone */ });
+  } catch { /* already done */ }
 }
 
 // Called on gateway shutdown so warm queries don't outlive it.

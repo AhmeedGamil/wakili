@@ -16,6 +16,10 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY . .
 
+# Uploads can come from a Windows checkout, where git hands out CRLF endings.
+# dash rejects the resulting `set -e\r`, so strip CR before the shim ever runs.
+RUN sed -i 's/\r$//' docker-entrypoint.sh
+
 ENV WAKILI_HOME=/data \
     CLAUDE_CONFIG_DIR=/data/claude-config \
     CODEX_HOME=/data/codex

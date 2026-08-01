@@ -16,6 +16,8 @@ import zlib from "node:zlib";
 import { config, ROOT } from "./src/config.mjs";
 import { tailscaleUrl, startCloudflare } from "./src/tunnel.mjs";
 import { listFolders, isDir, createFolder } from "./src/folders.mjs";
+import { listProjects, rememberProject, forgetProject, backfillProjects } from "./src/projects.mjs";
+import { listHostSessions, findHostSession, readHostTranscript, warmHostSessions } from "./src/host-sessions.mjs";
 import { qrTerminal } from "./src/qr.mjs";
 import { getAgent, listAgents } from "./src/agents/registry.mjs";
 import { commandsReady, modelsReady, closeWarmClaude } from "./src/agents/claude.mjs";
@@ -293,6 +295,9 @@ async function runTurn(session, text, controls, attachments, agentId, clientMess
     userMsg.attachments = attachments.map((a) => ({ name: a.name, url: a.url || "", image: IMG_RE.test(a.name || "") }));
   }
   session.messages.push(userMsg);
+  // The chat becomes real the moment it carries a message — until now it was a
+  // draft and deliberately absent from the session list.
+  if (session.draft) session.draft = false;
   if (session.title === "New chat" && (text || attachments?.length)) session.title = (text || attachments[0].name).slice(0, 48);
   if (controls) session.controls = controls;
   await sessionStore.save(session);
@@ -501,8 +506,28 @@ const server = http.createServer(async (req, res) => {
     // create a new sub-folder inside an existing one
     if (p === "/api/folders" && m === "POST") {
       const b = await readBody(req);
-      try { return json(res, 200, { path: await createFolder(b.parent, b.name) }); }
-      catch (e) { return json(res, 400, { error: String((e && e.message) || e) }); }
+      try {
+        const dest = await createFolder(b.parent, b.name);
+        rememberProject(dest); // you made it to work in it — it's a project from now on
+        return json(res, 200, { path: dest });
+      } catch (e) { return json(res, 400, { error: String((e && e.message) || e) }); }
+    }
+
+    // Known projects. Agent-independent by design: the sidebar used to derive
+    // this list from the sessions of the SELECTED agent, so a project was
+    // invisible from every tab but the one it was first used in.
+    if (p === "/api/projects" && m === "GET") return json(res, 200, listProjects());
+    if (p === "/api/projects" && m === "POST") {
+      const b = await readBody(req);
+      const dir = typeof b.path === "string" ? b.path.trim() : "";
+      if (!dir) return json(res, 400, { error: "path required" });
+      if (!(await isDir(dir))) return json(res, 400, { error: "not a directory" });
+      return json(res, 200, rememberProject(dir));
+    }
+    // Forget a project (the folder on disk is left alone).
+    if (p === "/api/projects" && m === "DELETE") {
+      const b = await readBody(req);
+      return json(res, 200, { ok: forgetProject(b && b.path) });
     }
 
     // every file that's flowed through (uploads + agent-sent), for the sidebar
@@ -526,13 +551,62 @@ const server = http.createServer(async (req, res) => {
     // Each summary carries a live `busy` flag so the phone can show per-session
     // status (badges) and enable/disable the composer for the active session only.
     if (p === "/api/sessions" && m === "GET") return json(res, 200, (await sessionStore.list()).map(withMeta));
+
+    // Chats started on the HOST (a terminal on this machine) rather than through
+    // Wakili — one page at a time, newest first. Every Wakili chat also writes a
+    // host transcript, so those are filtered out by resume id: without that the
+    // list would hand the user back their own phone chats.
+    if (p === "/api/host-sessions" && m === "GET") {
+      const owned = new Set();
+      for (const s of await sessionStore.listResumeIds()) owned.add(s);
+      const all = url.searchParams.get("all") === "1";
+      const limit = Math.min(50, Math.max(1, Number(url.searchParams.get("limit")) || 5));
+      return json(res, 200, await listHostSessions({
+        ownedIds: owned,
+        scopePaths: listProjects().map((x) => x.path),
+        agentId: url.searchParams.get("agentId") || "",
+        cursor: url.searchParams.get("cursor") || "",
+        limit,
+        all,
+      }));
+    }
+
+    // Adopt a host session: a real Wakili chat bound to the SAME agent-side id,
+    // so the next message resumes that conversation with its full context. The
+    // transcript is imported for display only (see readHostTranscript).
+    if ((mm = p.match(/^\/api\/host-sessions\/([\w-]+)\/adopt$/)) && m === "POST") {
+      const entry = await findHostSession(mm[1]);
+      if (!entry) return notFound(res);
+      // Adopting twice should land on the chat that already exists, not fork it.
+      const existing = await sessionStore.findByResumeId(entry.id);
+      if (existing) return json(res, 200, withMeta(existing));
+      const { messages, truncated } = await readHostTranscript(entry);
+      const session = await sessionStore.create({ agentId: entry.agentId, cwd: entry.cwd || null, draft: false });
+      session.resumeId = entry.id;
+      session.adoptedFrom = "host";
+      session.title = entry.title || "Host chat";
+      session.messages = messages;
+      if (truncated) {
+        session.messages.unshift({
+          role: "assistant",
+          parts: [{ type: "text", text: "_Earlier messages in this host session aren't shown here. The agent still has them — it resumes the original session._" }],
+        });
+      }
+      if (entry.cwd) rememberProject(entry.cwd);
+      await sessionStore.save(session);
+      return json(res, 201, withMeta(session));
+    }
     if (p === "/api/sessions" && m === "POST") {
       const b = await readBody(req);
       // Validate cwd like PATCH does — a bad path here (typo, mangled escape)
       // would otherwise surface later as a spawn failure mid-turn.
       const cwd = typeof b.cwd === "string" ? b.cwd.trim() : "";
       if (cwd && !(await isDir(cwd))) return json(res, 400, { error: "not a directory" });
-      return json(res, 201, withMeta(await sessionStore.create({ agentId: b.agentId, model: b.model, cwd: cwd || null })));
+      if (cwd) rememberProject(cwd);
+      // A chat opened from the UI starts as a draft (hidden from the list until
+      // its first message). `draft: false` lets a caller opt out explicitly.
+      const draft = b.draft !== false;
+      return json(res, 201, withMeta(await sessionStore.create({ agentId: b.agentId, model: b.model, cwd: cwd || null, draft })));
     }
 
     if ((mm = p.match(/^\/api\/sessions\/([\w-]+)$/))) {
@@ -609,6 +683,7 @@ const server = http.createServer(async (req, res) => {
         if (typeof b.cwd === "string") {
           const dir = b.cwd.trim();
           if (dir && !(await isDir(dir))) return json(res, 400, { error: "not a directory" });
+          if (dir) rememberProject(dir); // picking a folder registers it for every agent
           // changing the working dir starts a fresh thread (resume ids are dir-bound)
           if ((s.cwd || "") !== dir) { s.cwd = dir || null; s.resumeId = null; }
         }
@@ -727,6 +802,38 @@ const server = http.createServer(async (req, res) => {
       await sessionStore.save(next);
       const token = recordFile({ sessionId: next.id, source: "user", filePath: dest, name });
       return json(res, 200, { session: withMeta(next), file: { name, path: dest, url: `/api/files/${token}` } });
+    }
+
+    // Switch this chat to a different agent IN PLACE. The chat, its history and
+    // its folder all stay put; only the agent behind it changes. The native
+    // thread cannot cross agents (resume ids are per-agent), so the transcript
+    // so far is exported to a file the new agent reads on its first turn — the
+    // same context bridge /handoff builds, minus the second chat. The old
+    // agent's controls are dropped: they don't map onto the new one, which
+    // re-applies its own defaults client-side.
+    if ((mm = p.match(/^\/api\/sessions\/([\w-]+)\/agent$/)) && m === "POST") {
+      const s = await sessionStore.get(mm[1]);
+      if (!s) return notFound(res);
+      const b = await readBody(req);
+      if (!getAgent(b.agentId)) return json(res, 400, { error: "unknown agent" });
+      let file = null;
+      if (b.agentId !== s.agentId) {
+        // Only a chat with something in it needs context carried across.
+        if ((s.messages || []).length) {
+          await fsp.mkdir(config.uploadsDir, { recursive: true });
+          const slug = String(s.title || "chat").replace(/[^\w.\- ]/g, "_").trim().slice(0, 40) || "chat";
+          const name = `handoff-${slug}.md`;
+          const dest = path.join(config.uploadsDir, `${crypto.randomUUID()}-${name}`);
+          await fsp.writeFile(dest, transcriptMd(s));
+          const token = recordFile({ sessionId: s.id, source: "user", filePath: dest, name });
+          file = { name, path: dest, url: `/api/files/${token}` };
+        }
+        s.agentId = b.agentId;
+        s.resumeId = null;
+        s.controls = {};
+        await sessionStore.save(s);
+      }
+      return json(res, 200, { session: withMeta(s), file });
     }
 
     // Direct shell command ("!cmd" from the chat box): run it in the session's
@@ -1081,6 +1188,22 @@ const server = http.createServer(async (req, res) => {
 const recoveredTurns = await sessionStore.recoverPendingTurns();
 if (recoveredTurns) console.log(`  Recovered ${recoveredTurns} interrupted turn(s) from the previous run.`);
 
+// Seed the project registry from folders sessions already point at, so an
+// upgrade starts with the projects the user has actually worked in rather than
+// an empty list. Idempotent: only paths not already registered are added.
+const seededProjects = backfillProjects((await sessionStore.list()).map((s) => s.cwd).filter(Boolean));
+if (seededProjects) console.log(`  Registered ${seededProjects} project folder(s) from existing sessions.`);
+
+// Drafts nobody ever wrote in. Anything younger than a day is left alone — its
+// client may still be sitting in that chat, about to send the first message.
+const prunedDrafts = await sessionStore.pruneDrafts();
+if (prunedDrafts) console.log(`  Removed ${prunedDrafts} abandoned draft chat(s).`);
+
+// Read the host transcripts' headers once in the background, so the first
+// "From the host" request is served from the warm cache instead of paying for
+// the whole scan. Never blocks boot; failures just mean the first list is slow.
+warmHostSessions().then((n) => n && console.log(`  Indexed ${n} host session(s).`));
+
 await Promise.all([commandsReady, modelsReady]); // discover Claude's real slash commands + latest model labels before serving the manifest
 
 // --tunnel cloudflare | tailscale | both | none   (default: tailscale if present)
@@ -1134,6 +1257,16 @@ function shutdown() {
 }
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
+
+// Node kills the process on an unhandled rejection, so one stray promise in a
+// teardown/timer path (nothing on the stack to catch it) drops every live
+// session's stream — the exact failure the durability model exists to prevent.
+// Log and keep serving: a rejected promise no one awaited never means the
+// gateway's own state is unsound. uncaughtException is deliberately NOT trapped
+// — that one can leave real state torn, and dying is the honest response.
+process.on("unhandledRejection", (reason) => {
+  console.error(`  Unhandled rejection (ignored, gateway still up): ${(reason && (reason.stack || reason.message)) || reason}`);
+});
 
 // An autostarted instance and a manual launch will eventually race for the
 // port. Losing the race means a gateway is already up — that's success, not a
