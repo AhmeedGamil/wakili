@@ -368,7 +368,13 @@ async function runTurn(session, text, controls, attachments, agentId, clientMess
     onClose: async () => {
       if (closed) return;
       closed = true;
-      activeTurns.delete(session.id);
+      // The live copy deliberately OUTLIVES this point, until the transcript
+      // save below lands. Deleting it here — as this used to — opened a window
+      // where the turn existed in neither place a client can read: a resync
+      // arriving in it answered `parts: []`, and the client's renderSnapshot
+      // wiped the live region, so a finished turn vanished off the screen. The
+      // window is one transcript write, which is not small on a session whose
+      // JSON runs to megabytes.
       stopTurnSaver(session.id); // no sidecar writes may land after this point
       children.delete(session.id);
       try {
@@ -384,6 +390,14 @@ async function runTurn(session, text, controls, attachments, agentId, clientMess
           session.messages.push(assistantMsg);
         }
         await sessionStore.save(session);
+        // The transcript now holds the turn, so the live copy can go — and must,
+        // before anything reads both and renders it twice. Handing over in this
+        // order means every instant has the turn in exactly one readable place.
+        //
+        // Nothing from here to the publish() below may await: the handover is
+        // only atomic because no request can be served between them. An await
+        // inserted in this stretch silently reopens the empty-snapshot window.
+        activeTurns.delete(session.id);
         // Sidecar cleanup only AFTER the save: the turn must never have a moment
         // where it exists nowhere durable. A crash in the gap just means boot
         // recovery sees the duplicate and skips it.
@@ -391,6 +405,9 @@ async function runTurn(session, text, controls, attachments, agentId, clientMess
       } catch (error) {
         console.error(`[turn] Failed to persist ${session.id}:`, error);
       } finally {
+        // Also on the failure path: the save threw, so the handover above never
+        // ran and the live copy would otherwise leak into the next turn.
+        activeTurns.delete(session.id);
         releaseTurn(session.id, claim);
         publish(session.id, { type: "_gateway", subtype: "turn_end", title: session.title, clientMessageId });
       }
