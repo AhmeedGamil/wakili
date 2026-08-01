@@ -58,10 +58,30 @@ export function createChatController({ api, store, emitter }) {
   const liveParts = new Map(); // sessionId -> parts[] (same shape the server assembles)
 
   // The gateway's ordering stamp (src/sse.mjs) for the newest event folded into
-  // each session's buffer. Recorded ONLY — nothing branches on it yet, so
-  // behaviour is byte-for-byte what it was; it exists so an out-of-order
-  // snapshot shows up in the recorder before we start rejecting one.
+  // each session's buffer — a high-water mark, so it never moves backwards.
   const appliedSeq = new Map(); // sessionId -> seq
+
+  /**
+   * Flag a snapshot stamped BEFORE state we have already folded in. Two resyncs
+   * can be answered in the opposite order (HTTP guarantees no ordering), and
+   * adopting the older one rewinds the turn — deltas then append onto that
+   * rewound base and the middle of the answer is gone for good. A newer
+   * snapshot contains everything an older one had, so dropping the older one
+   * can never lose information.
+   *
+   * Decided ONCE here, before routing, so the buffer and the render path can
+   * never disagree about which snapshots they took.
+   */
+  function markStale(id, ev) {
+    if (ev.kind !== "snapshot" || ev.seq == null) return;
+    const applied = appliedSeq.get(id);
+    if (applied == null || ev.seq >= applied) return;
+    ev.stale = true;
+    recorder.anomaly("stale-snapshot", {
+      sessionId: id, snapshotSeq: ev.seq, appliedSeq: applied,
+      parts: (ev.parts || []).length, client: ev.client || "",
+    });
+  }
 
   function accumulate(id, ev) {
     switch (ev.kind) {
@@ -69,16 +89,7 @@ export function createChatController({ api, store, emitter }) {
       // Any snapshot is server truth for the whole turn — adopt it even when it
       // was another tab's resync (the render path filters by client; we don't).
       case "snapshot": {
-        // A snapshot stamped BEFORE state we have already folded in is stale:
-        // its resync was answered out of order, and adopting it rewinds the
-        // turn (the missing-chunk symptom). Only reported for now.
-        const applied = appliedSeq.get(id);
-        if (ev.seq != null && applied != null && ev.seq < applied) {
-          recorder.anomaly("stale-snapshot", {
-            sessionId: id, snapshotSeq: ev.seq, appliedSeq: applied,
-            parts: (ev.parts || []).length, client: ev.client || "",
-          });
-        }
+        if (ev.stale) break; // older than what we hold — see markStale
         liveParts.set(id, (ev.parts || []).map((p) => ({ ...p })));
         break;
       }
@@ -109,8 +120,13 @@ export function createChatController({ api, store, emitter }) {
     // Advance the session's watermark past everything we've now seen. Kept
     // outside the switch on purpose: lifecycle events don't change parts, but
     // they DO prove the stream has moved past that point, which is exactly what
-    // makes a later-arriving older snapshot recognisable as stale.
-    if (ev.seq != null) appliedSeq.set(id, ev.seq);
+    // makes a later-arriving older snapshot recognisable as stale. Monotonic —
+    // a stale event must never drag the mark backwards, or the next stale one
+    // after it would look fresh.
+    if (ev.seq != null) {
+      const applied = appliedSeq.get(id);
+      if (applied == null || ev.seq > applied) appliedSeq.set(id, ev.seq);
+    }
     recorder.event(id, ev);
   }
 
@@ -142,8 +158,15 @@ export function createChatController({ api, store, emitter }) {
       case "turnStart": setBusy(id, true); if (!gated) emitter.emit("turnStart"); break;
       case "snapshot":
         if (ev.client && ev.client !== clientId) break; // another tab's resync
+        // The gate opens either way: a stale snapshot still PROVES the resync
+        // round trip completed, and holding the gate shut until the 10s timeout
+        // would trade a rewound turn for a frozen one — a worse symptom than
+        // the one being fixed. Only its (older) contents are refused.
         awaitingSnapshot = false;
         clearTimeout(snapTimer);
+        if (ev.stale) break;
+        // busy comes from the same older instant as the parts — a turn may well
+        // have ended since, so it is refused with them.
         setBusy(id, ev.busy);
         emitter.emit("snapshot", { parts: ev.parts, busy: ev.busy });
         // Re-raise the cards still awaiting an answer (the dock dedupes by id).
@@ -271,6 +294,9 @@ export function createChatController({ api, store, emitter }) {
       }
       const sid = raw.sessionId;
       if (!sid) return;
+      // Decide staleness before anything consumes the event, so the buffer and
+      // the render path below can never take different views of it.
+      markStale(sid, ev);
       // Feed the live-turn buffer for EVERY session before routing: background
       // sessions accumulate silently, the active one stays mirrored even while
       // the snapshot gate is dropping its render events.
