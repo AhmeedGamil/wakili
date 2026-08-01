@@ -32,11 +32,14 @@ export function createChatController({ api, store, emitter }) {
   // An anomaly uploads this tab's ring to the gateway, so one /api/debug/stream
   // read shows the phone's and the laptop's view of the same turn side by side.
   recorder.setUploader(api.debugReport);
-  // Between switching to a session and its snapshot arriving on the stream, the
-  // session's content events are ignored — the snapshot (published into the same
-  // ordered stream) already contains them; rendering both would duplicate.
-  let awaitingSnapshot = false;
-  let snapTimer = 0;
+  // There is no render gate. Switching into a session used to mute its content
+  // events until the resync snapshot came back — up to 10s on a bad link, which
+  // is what made a turn appear frozen at the moment you switched. The gate only
+  // ever existed to stop a delta being drawn twice (once live, once from the
+  // snapshot), and renderSnapshot has always been a clearLive() + full redraw,
+  // so it was already idempotent. With the seq guard refusing out-of-order
+  // snapshots, the stream's own ordering is enough: deltas draw immediately,
+  // and a snapshot that lands after them wipes and redraws the same content.
 
   const saveLastConfig = () => { const s = store.get(); persistLastConfig(s.agentId, s.controls); };
 
@@ -130,43 +133,27 @@ export function createChatController({ api, store, emitter }) {
     recorder.event(id, ev);
   }
 
-  // Ask the server to publish `id`'s live state into the stream; gate content
-  // events until it lands. The gate self-clears on failure or timeout so a lost
-  // snapshot can't mute the session forever.
+  // Ask the server to publish `id`'s live state into the stream.
   // A failed POST RETRIES (bounded backoff): the snapshot is the only full-state
   // re-delivery after a gap, so giving up on one flaky request left everything
   // streamed while away invisible until turn end — and a missed turn_end stuck
-  // the composer on Stop. The timeout case needs no retry of its own: a snapshot
-  // that never arrived means the stream is down, and the reconnect handler
-  // already re-opens the session (and resyncs) when it comes back.
+  // the composer on Stop.
   function requestResync(id, attempt = 0) {
     if (!streamReady) return; // the stream's "connected" handler resyncs on open
     recorder.note("resync-request", { sessionId: id, attempt, appliedSeq: appliedSeq.get(id) });
-    awaitingSnapshot = true;
-    clearTimeout(snapTimer);
-    snapTimer = setTimeout(() => { awaitingSnapshot = false; }, 10000);
     api.resync(id, clientId).catch(() => {
-      awaitingSnapshot = false;
       if (attempt < 5) setTimeout(() => { if (store.get().activeId === id) requestResync(id, attempt + 1); }, 1000 * 2 ** attempt);
     });
   }
 
   // The active session renders live into the chat.
   function handleActive(id, ev) {
-    const gated = awaitingSnapshot; // busy bookkeeping still runs while gated
     switch (ev.kind) {
-      case "turnStart": setBusy(id, true); if (!gated) emitter.emit("turnStart"); break;
+      case "turnStart": setBusy(id, true); emitter.emit("turnStart"); break;
       case "snapshot":
         if (ev.client && ev.client !== clientId) break; // another tab's resync
-        // The gate opens either way: a stale snapshot still PROVES the resync
-        // round trip completed, and holding the gate shut until the 10s timeout
-        // would trade a rewound turn for a frozen one — a worse symptom than
-        // the one being fixed. Only its (older) contents are refused.
-        awaitingSnapshot = false;
-        clearTimeout(snapTimer);
-        if (ev.stale) break;
-        // busy comes from the same older instant as the parts — a turn may well
-        // have ended since, so it is refused with them.
+        if (ev.stale) break; // older than what's on screen — see markStale
+        // busy comes from the same instant as the parts, so they move together.
         setBusy(id, ev.busy);
         emitter.emit("snapshot", { parts: ev.parts, busy: ev.busy });
         // Re-raise the cards still awaiting an answer (the dock dedupes by id).
@@ -177,18 +164,18 @@ export function createChatController({ api, store, emitter }) {
         break;
       // A queued message waiting to go out means the turn was interrupted to make
       // room for it (vs. a plain stop with nothing pending).
-      case "stopped": if (!gated) emitter.emit("stopped", { interrupted: !!store.get().queued[id] }); break;
-      case "text": if (!gated) emitter.emit("text", ev.text); break;
-      case "thinking": if (!gated) emitter.emit("thinking", ev.text); break;
-      case "tools": if (!gated) ev.tools.forEach((t) => { if (!GATED.has(t.name)) emitter.emit("tool", t); }); break;
-      case "tool": if (!gated) emitter.emit("tool", ev.tool); break; // gateway-issued chip (auto-approved gated tool)
-      case "toolResult": if (!gated) emitter.emit("toolResult", { id: ev.id, output: ev.output, isError: ev.isError }); break;
-      case "question": if (!gated) emitter.emit("question", { id: ev.id, questions: ev.questions }); break;
-      case "permission": if (!gated) emitter.emit("permission", { id: ev.id, tool: ev.tool, input: ev.input }); break;
-      case "requestResolved": if (!gated) emitter.emit("requestResolved", { id: ev.id }); break;
+      case "stopped": emitter.emit("stopped", { interrupted: !!store.get().queued[id] }); break;
+      case "text": emitter.emit("text", ev.text); break;
+      case "thinking": emitter.emit("thinking", ev.text); break;
+      case "tools": ev.tools.forEach((t) => { if (!GATED.has(t.name)) emitter.emit("tool", t); }); break;
+      case "tool": emitter.emit("tool", ev.tool); break; // gateway-issued chip (auto-approved gated tool)
+      case "toolResult": emitter.emit("toolResult", { id: ev.id, output: ev.output, isError: ev.isError }); break;
+      case "question": emitter.emit("question", { id: ev.id, questions: ev.questions }); break;
+      case "permission": emitter.emit("permission", { id: ev.id, tool: ev.tool, input: ev.input }); break;
+      case "requestResolved": emitter.emit("requestResolved", { id: ev.id }); break;
       case "file":
         store.set((s) => ({ files: { ...s.files, received: [...s.files.received, ev.file] } }));
-        if (!gated) emitter.emit("file", ev.file);
+        emitter.emit("file", ev.file);
         refreshFiles(); // keep the sidebar files list current
         break;
       case "error": console.warn("[agent]", ev.text); break;
@@ -206,7 +193,7 @@ export function createChatController({ api, store, emitter }) {
         if (ev.title) {
           store.set((s) => ({ activeSession: s.activeSession ? { ...s.activeSession, title: ev.title } : null }));
         }
-        if (!gated) emitter.emit("turnEnd");
+        emitter.emit("turnEnd");
         sessionCache.refresh(id); // keep the transcript cache current for the next switch
         refreshSessions();
         refreshFiles(); // any files this turn used/produced
