@@ -9,9 +9,16 @@ export function createDeviceController({ api, store }) {
   // autostart mechanism, so this setting lives on the laptop, not the phone.
   async function refreshAutostart() { try { store.set({ autostart: await api.autostart() }); } catch { /* ignore */ } }
 
+  // Both snapshots at once, for a surface that is about to render them (the
+  // Settings → Device tab). The laptop is a live thing — it can be woken, put
+  // to sleep, or toggled from another client between two visits to this tab —
+  // so what it shows must be read when it opens, not once at boot.
+  async function refreshDevice() { await Promise.all([refreshPower(), refreshAutostart()]); }
+
   return {
     refreshPower,
     refreshAutostart,
+    refreshDevice,
     lockScreen: () => api.lockScreen(),
     screenOff: () => api.screenOff(),
     shutdownComputer: () => api.shutdown(),

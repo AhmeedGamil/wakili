@@ -35,6 +35,12 @@ export const sessionStore = {
       model,
       cwd, // working directory the agent runs in (null = the gateway's own dir)
       controls: {}, // per-agent native control values (model/effort/thinking/...)
+      // Auto continue is ON by default: a turn killed by the usage limit should
+      // pick itself back up when quota returns unless the user says otherwise.
+      // Written explicitly so the value is visible in the file, but every read
+      // goes through autoContinueOn() — sessions created before this default
+      // have no field at all and must still read as on.
+      autoContinue: true,
       allowedTools: [], // tools the user chose to auto-approve for this session
       resumeId: null, // agent-native session id for --resume
       createdAt: now,
@@ -85,11 +91,12 @@ export const sessionStore = {
   // Boot-time crash recovery: any sidecar still on disk is a turn whose gateway
   // died mid-stream — fold it into its transcript (marked interrupted) so the
   // streamed-so-far content survives, matching the invariant "anything that
-  // reached the server is saved". Returns how many turns were recovered.
+  // reached the server is saved". Returns the recovered sessions' ids, so the
+  // caller can re-arm auto-continue for chats a crash cut mid-task.
   async recoverPendingTurns() {
     let files = [];
-    try { files = await fsp.readdir(config.dataDir); } catch { return 0; }
-    let recovered = 0;
+    try { files = await fsp.readdir(config.dataDir); } catch { return []; }
+    const recovered = [];
     for (const f of files) {
       if (!f.endsWith(".turn.json")) continue;
       const id = f.slice(0, -".turn.json".length);
@@ -103,7 +110,7 @@ export const sessionStore = {
           if (!(last && last.role === "assistant" && JSON.stringify(last.parts) === JSON.stringify(parts))) {
             s.messages.push({ role: "assistant", parts, interrupted: true });
             await this.save(s);
-            recovered++;
+            recovered.push(id);
           }
         }
       } catch { /* corrupt sidecar — nothing recoverable */ }
@@ -132,40 +139,6 @@ export const sessionStore = {
       } catch { /* skip corrupt */ }
     }
     return out.sort((a, b) => b.updatedAt - a.updatedAt);
-  },
-
-  /**
-   * Every agent-side resume id Wakili owns. The host-session list subtracts
-   * these: a transcript with one of these ids isn't a session started on the
-   * host, it's one of THIS user's chats seen from the CLI's side.
-   */
-  async listResumeIds() {
-    let files = [];
-    try { files = await fsp.readdir(config.dataDir); } catch { return []; }
-    const out = [];
-    for (const f of files) {
-      if (!f.endsWith(".json") || f.endsWith(".turn.json")) continue;
-      try {
-        const s = JSON.parse(await fsp.readFile(path.join(config.dataDir, f), "utf8"));
-        if (s.resumeId) out.push(s.resumeId);
-      } catch { /* skip corrupt */ }
-    }
-    return out;
-  },
-
-  /** The session bound to `resumeId`, if one exists (adopting is idempotent). */
-  async findByResumeId(resumeId) {
-    if (!resumeId) return null;
-    let files = [];
-    try { files = await fsp.readdir(config.dataDir); } catch { return null; }
-    for (const f of files) {
-      if (!f.endsWith(".json") || f.endsWith(".turn.json")) continue;
-      try {
-        const s = JSON.parse(await fsp.readFile(path.join(config.dataDir, f), "utf8"));
-        if (s.resumeId === resumeId) return s;
-      } catch { /* skip corrupt */ }
-    }
-    return null;
   },
 
   /**

@@ -182,6 +182,18 @@ const SETTINGS_PATH = path.join(config.runtimeDir, "claude-settings.json");
 const MCP_CONFIG_PATH = path.join(config.runtimeDir, "mcp-config.json");
 fs.mkdirSync(config.runtimeDir, { recursive: true });
 
+// The user may be asleep when a card appears — every layer of the ask/permission
+// wait chain must outlive the gateway's own (long) waits, or an outer timeout
+// auto-answers the card first. This is the outermost layer: hook + MCP tool
+// timeouts sit above the hook child's / MCP server's HTTP waits, which sit above
+// the gateway's QUESTION/PERMISSION_WAIT_MS. Seconds for the hook (Claude Code's
+// unit), milliseconds for MCP_TOOL_TIMEOUT.
+export const CARD_WAIT_MS = Math.max(
+  Number(process.env.WAKILI_QUESTION_TIMEOUT_MS) || 3_600_000,
+  Number(process.env.WAKILI_PERMISSION_TIMEOUT_MS) || 3_600_000,
+);
+export const HOOK_TIMEOUT_SECS = Math.ceil(CARD_WAIT_MS / 1000) + 120;
+
 // Permission hook gates mutating tools; the gateway's own MCP tools are
 // pre-allowed — both are phone-facing (delivering a file / showing a question
 // card IS the user interaction), and headless `-p` auto-denies any tool that
@@ -196,7 +208,7 @@ fs.writeFileSync(
       PreToolUse: [
         {
           matcher: "Bash|Write|Edit|MultiEdit|NotebookEdit|AskUserQuestion",
-          hooks: [{ type: "command", command: `node "${HOOK}"` }],
+          hooks: [{ type: "command", command: `node "${HOOK}"`, timeout: HOOK_TIMEOUT_SECS }],
         },
       ],
     },
@@ -248,7 +260,12 @@ export const PHONE_DIRECTIVE = ASK_DIRECTIVE + "\n\n" + SEND_DIRECTIVE;
 // config.warmTtlMs idle — the next message just cold-starts with --resume, so
 // nothing is lost. Reuse additionally requires the caller's resumeId to be the
 // thread this process is already on (guards agent switches, which null it).
-const warm = new Map(); // sessionId -> { child, key, threadId, turn, idleTimer, alive }
+const warm = new Map(); // sessionId -> { child, key, threadId, turn, idleTimer, alive, adopt, orphans }
+
+// Continuation events that arrive while the gateway can't take a turn yet
+// (the previous turn's fold is mid-flight) are buffered, not dropped. The cap
+// only guards a pathological stall; a real fold clears in milliseconds.
+export const ORPHAN_BUFFER_MAX = 1000;
 
 function killWarm(entry) {
   clearTimeout(entry.idleTimer);
@@ -325,7 +342,7 @@ export const claudeAgent = {
     },
   },
 
-  run({ text, controls = {}, resumeId, sessionId, cwd, gatewayUrl, onEvent, onError, onClose }) {
+  run({ text, controls = {}, resumeId, sessionId, cwd, gatewayUrl, onEvent, onError, onClose, adoptTurn }) {
     // Appending the thinking keyword to a slash command ("/context\n\nthink")
     // stops the CLI from recognizing it — the whole thing would go to the model
     // as plain text. Slash commands ship exactly as typed.
@@ -343,6 +360,7 @@ export const claudeAgent = {
       if (existing.alive && !existing.turn && existing.key === key && resumeId === existing.threadId) {
         clearTimeout(existing.idleTimer);
         existing.turn = { onEvent, onError, onClose };
+        existing.adopt = adoptTurn || existing.adopt;
         try { existing.child.stdin.write(userMsg); return existing.child; }
         catch { /* dead pipe — recycle below */ }
       }
@@ -384,10 +402,16 @@ export const claudeAgent = {
         WAKILI_SESSION: sessionId,
         WAKILI_GATEWAY: gatewayUrl,
         WAKILI_TOKEN: config.token,
+        // ask_options blocks its MCP call for as long as the gateway waits on
+        // the user — neither the CLI's MCP call timeout NOR its idle timeout
+        // (which killed a quiet 30-minute wait: "no response or progress for
+        // 1800s") may cut that short.
+        MCP_TOOL_TIMEOUT: String(CARD_WAIT_MS + 120_000),
+        CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT: String(CARD_WAIT_MS + 120_000),
       },
     });
 
-    const entry = { child, key, threadId: resumeId || null, turn: { onEvent, onError, onClose }, idleTimer: null, alive: true };
+    const entry = { child, key, threadId: resumeId || null, turn: { onEvent, onError, onClose }, idleTimer: null, alive: true, adopt: adoptTurn || null, orphans: [] };
     warm.set(sessionId, entry);
 
     // A turn ends on the CLI's `result` event (the process stays alive waiting
@@ -413,8 +437,32 @@ export const claudeAgent = {
         let evt;
         try { evt = JSON.parse(line); } catch { continue; }
         if (evt.type === "result" && evt.session_id) entry.threadId = evt.session_id; // the thread this process now carries
-        const t = entry.turn;
-        if (t) t.onEvent(evt);
+        // Model activity with no turn attached is an agent-initiated
+        // continuation: a background task finished and the harness re-invoked
+        // the model on its own. Ask the gateway to adopt it as a real turn —
+        // busy, streamed, persisted — instead of dropping the events (which is
+        // what silently vanished those turns). Only stream_event/assistant
+        // adopt: they are unambiguous model output and always conclude with a
+        // `result`; a bare orphan "user" event (the injected task notification,
+        // nothing renderable) must not open a turn that nothing would close.
+        // Adoption can miss for a beat while the previous turn's fold still
+        // holds the session — buffer and retry on the next event.
+        if (!entry.turn && entry.adopt && (evt.type === "stream_event" || evt.type === "assistant")) {
+          entry.orphans.push(evt);
+          const io = entry.adopt(entry.child);
+          if (io) {
+            clearTimeout(entry.idleTimer); // live again — no idle reap mid-turn
+            entry.turn = io;
+            const buffered = entry.orphans;
+            entry.orphans = [];
+            for (const e of buffered) io.onEvent(e);
+          } else if (entry.orphans.length > ORPHAN_BUFFER_MAX) {
+            entry.orphans.shift();
+          }
+        } else {
+          const t = entry.turn;
+          if (t) t.onEvent(evt);
+        }
         if (evt.type === "result") endTurn(0);
       }
     });

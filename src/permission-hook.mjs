@@ -51,7 +51,10 @@ process.stdin.on("end", () => {
     }
   );
   req.on("error", () => emit("deny"));
-  req.setTimeout(125000, () => { req.destroy(); emit("deny"); });
+  // Mirrors the gateway's PERMISSION_WAIT_MS (same env, inherited through the
+  // agent spawn) + headroom — the gateway's wait decides, not this socket.
+  const waitMs = Math.max(60_000, Number(process.env.WAKILI_PERMISSION_TIMEOUT_MS) || 3_600_000) + 60_000;
+  req.setTimeout(waitMs, () => { req.destroy(); emit("deny"); });
   req.write(payload);
   req.end();
 });

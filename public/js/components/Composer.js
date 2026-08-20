@@ -16,7 +16,7 @@ import { createSlashMenu } from "./slashMenu.js";
 import { isImageName } from "./media.js";
 import { IS_NATIVE } from "../core/env.js";
 
-export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal, onUpload, onRemoveUpload, commands = [] }) {
+export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal, onUpload, onRemoveUpload, onSchedule, onLoadScheduled, onCancelScheduled, commands = [] }) {
   // [{ name, dataBase64, dataUrl, isImg, status, progress, up, promise }]
   // status: "uploading" | "done" | "failed"; up = { path, name, url } once done.
   let pending = [];
@@ -40,8 +40,11 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
   const attachBtn = el("button", { class: "btn attach", type: "button", title: "Attach files", "aria-label": "Attach" }, icon("plus"));
   const chips = el("div", { class: "chips" });
   const menu = el("div", { class: "slash-menu", hidden: "" });
-  const addMenu = el("div", { class: "add-menu", hidden: "" }); // + button: Add files / Terminal
+  const addMenu = el("div", { class: "add-menu", hidden: "" }); // + button: Add files / Terminal / Schedule
+  const schedMenu = el("div", { class: "add-menu sched-menu", hidden: "" }); // time picker for + → Schedule
+  const manageMenu = el("div", { class: "add-menu sched-manage", hidden: "" }); // pending scheduled tasks
   const queued = el("div", { class: "queued", hidden: "" }); // pending message shown while busy
+  const sched = el("div", { class: "queued sched", hidden: "" }); // pending scheduled tasks chip
 
   // Two rows inside one box: what you write on top, everything you press
   // underneath — so the box opens two rows tall and typing never shares its line
@@ -50,9 +53,9 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
   // the slot. The add-menu stays inside the bar so it can float anchored above
   // the + button (absolutely positioned — it takes no layout space).
   const pickerSlot = el("div", { class: "composer-picker" });
-  const controls = el("div", { class: "composer-controls" }, addMenu, attachBtn, pickerSlot, send);
+  const controls = el("div", { class: "composer-controls" }, addMenu, schedMenu, manageMenu, attachBtn, pickerSlot, send);
   const bar = el("div", { class: "composer-bar" }, input, controls);
-  const root = el("form", { id: "composer", class: "composer" }, menu, queued, chips, bar, fileInput, imgInput);
+  const root = el("form", { id: "composer", class: "composer" }, menu, queued, sched, chips, bar, fileInput, imgInput);
 
   // A contenteditable auto-grows natively — ZERO JS measurement on the typing
   // path. The old ResizeObserver existed only to re-align the buttons once the
@@ -174,7 +177,7 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
     requestAnimationFrame(() => requestAnimationFrame(() => input.blur()));
   }
 
-  // ---- + (add) menu: attach Images / Files, or open the Terminal page ----
+  // ---- + (add) menu: attach Images / Files, Terminal, or Schedule ----
   const addBd = backdropFor(addMenu, closeAddMenu);
   function closeAddMenu() { addMenu.setAttribute("hidden", ""); addBd.hide(); }
   function openAddMenu() {
@@ -190,10 +193,87 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
         onMousedown: (e) => { e.preventDefault(); closeAddMenu(); onOpenTerminal && onOpenTerminal(); } },
         icon("terminal"), el("span", { text: "Terminal" })),
     );
+    // Schedule the typed message (and any attached files) for later — the
+    // gateway holds it (and rides out a dead quota window), so this device can
+    // go to sleep.
+    if (onSchedule) {
+      addMenu.append(el("button", { type: "button", class: "add-item",
+        onMousedown: (e) => {
+          e.preventDefault(); closeAddMenu();
+          if (!input.value.trim() && !pending.length) { input.focus(); return; } // type or attach the task first
+          openSchedMenu();
+        } },
+        icon("clock"), el("span", { text: "Schedule" })));
+    }
     addMenu.removeAttribute("hidden");
     addBd.show();
   }
   attachBtn.onclick = () => { if (addMenu.hasAttribute("hidden")) openAddMenu(); else closeAddMenu(); };
+
+  // ---- schedule popover: next occurrence of HH:MM, gateway-side from there ----
+  const schedBd = backdropFor(schedMenu, closeSchedMenu);
+  function closeSchedMenu() { schedMenu.setAttribute("hidden", ""); schedBd.hide(); }
+  function openSchedMenu() {
+    const d = new Date(Date.now() + 5 * 60000);
+    const pad = (n) => String(n).padStart(2, "0");
+    const time = el("input", { type: "time", class: "sched-time", value: pad(d.getHours()) + ":" + pad(d.getMinutes()) });
+    schedMenu.innerHTML = "";
+    schedMenu.append(
+      el("div", { class: "sched-title", text: "Run at" }),
+      time,
+      el("button", { type: "button", class: "add-item sched-go", onClick: async () => {
+        const parts = (time.value || "").split(":").map(Number);
+        if (parts.length < 2 || parts.some(Number.isNaN)) return;
+        const at = new Date(); at.setHours(parts[0], parts[1], 0, 0);
+        if (at.getTime() <= Date.now()) at.setDate(at.getDate() + 1); // past today → tomorrow
+        // The pending attachments go with the job — same items a send carries.
+        const ok = await onSchedule(input.value.trim(), at.getTime(), pending.slice());
+        closeSchedMenu();
+        if (ok) { input.value = ""; pending = []; renderChips(); }
+      } }, icon("clock"), el("span", { text: "Schedule" })),
+    );
+    schedMenu.removeAttribute("hidden");
+    schedBd.show();
+  }
+
+  // ---- scheduled chip + manage popover (cancel per task) ----
+  const manageBd = backdropFor(manageMenu, closeManage);
+  function closeManage() { manageMenu.setAttribute("hidden", ""); manageBd.hide(); }
+  let scheduledCount = 0;
+  function renderScheduled() {
+    sched.innerHTML = "";
+    if (!scheduledCount) { sched.setAttribute("hidden", ""); return; }
+    sched.append(
+      icon("clock"),
+      el("span", { class: "queued-label", text: scheduledCount + " scheduled — tap to manage" }),
+    );
+    sched.removeAttribute("hidden");
+  }
+  async function openManage() {
+    if (!onLoadScheduled) return;
+    const jobs = await onLoadScheduled();
+    scheduledCount = jobs.length;
+    renderScheduled();
+    if (!jobs.length) { closeManage(); return; }
+    manageMenu.innerHTML = "";
+    for (const j of jobs) {
+      const when = new Date(j.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      const info = el("div", { class: "sched-info" },
+        el("span", { class: "sched-when", text: when }),
+        el("span", { class: "sched-text", text: j.text }));
+      const atts = j.attachments || [];
+      if (atts.length) info.append(el("span", { class: "sched-att", text: "📎 " + atts.map((a) => a.name).join(", ") }));
+      manageMenu.append(el("div", { class: "sched-row" },
+        info,
+        el("button", { class: "queued-x", type: "button", title: "Cancel task", onClick: async () => {
+          if (onCancelScheduled) await onCancelScheduled(j.id);
+          openManage(); // re-list; closes itself when the last one goes
+        } }, icon("x"))));
+    }
+    manageMenu.removeAttribute("hidden");
+    manageBd.show();
+  }
+  sched.addEventListener("click", openManage);
   // One file (picked or pasted) → pending item: read to base64 (the data URL
   // doubles as the image preview), then eager-upload while the user types.
   const addFile = (file, name) => {
@@ -329,6 +409,8 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
       }
     },
     focus: () => input.focus(),
+    // Pending scheduled tasks for the ACTIVE session (from its withMeta count).
+    setScheduled: (n) => { scheduledCount = n || 0; renderScheduled(); },
     setCommands: (list) => { commands = Array.isArray(list) ? list : []; if (slash.isOpen()) slash.sync(); },
     // Per-session state: the draft text and pending attachments are saved on
     // session switch and restored when you come back — nothing leaks across chats.

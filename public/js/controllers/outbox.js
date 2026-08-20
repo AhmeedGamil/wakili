@@ -29,26 +29,36 @@ export function createOutbox({ api, store, emitter, setBusy }) {
     emitter.emit("toast", msg);
   }
 
-  // Post the turn once its attachments are on the laptop. Attachments picked in
-  // the composer are usually already uploaded (eagerly, on pick) or in flight —
-  // use/await that result. Anything without one (a failed eager upload, a
-  // Retry) uploads here. Kept re-runnable so Retry works.
-  async function transmit(entry) {
-    const id = entry.sessionId;
-    entry.status = "sending";
-    if (entry.handle) entry.handle.update("sending");
+  // Resolve the composer's raw picks into the {name, path, url} attachments
+  // the gateway understands. Eager uploads are reused (or awaited if still in
+  // flight); anything without a result (a failed eager upload, a Retry)
+  // uploads here. Throws the failing file's name so callers can say which one.
+  // Shared by sends and by scheduling — both must end with files on the laptop.
+  async function resolveUploads(id, raw) {
     const attachments = [];
-    for (const a of entry.raw) {
+    for (const a of raw || []) {
       let up = a.up || null;
       if (!up && a.promise) up = await a.promise.catch(() => null); // eager upload still in flight
       if (!up || !up.path) {
         try { up = await api.upload(a.name, a.dataBase64, id); } catch { up = null; }
         if (up && up.path) a.up = up; // remember, so another Retry won't re-upload
       }
-      if (!up || !up.path) return fail(entry, `Couldn't upload ${a.name} — tap Retry`);
+      if (!up || !up.path) throw new Error(a.name);
       attachments.push({ name: up.name, path: up.path, url: up.url || "" });
     }
     if (attachments.length && store.get().activeId === id) store.set((s) => ({ files: { ...s.files, uploaded: [...s.files.uploaded, ...attachments] } }));
+    return attachments;
+  }
+
+  // Post the turn once its attachments are on the laptop. Kept re-runnable so
+  // Retry works.
+  async function transmit(entry) {
+    const id = entry.sessionId;
+    entry.status = "sending";
+    if (entry.handle) entry.handle.update("sending");
+    let attachments;
+    try { attachments = await resolveUploads(id, entry.raw); }
+    catch (e) { return fail(entry, `Couldn't upload ${e.message} — tap Retry`); }
     setBusy(id, true);
     let r = null;
     try { r = await api.send(id, entry.text, entry.controls, attachments, entry.agentId); }
@@ -83,5 +93,5 @@ export function createOutbox({ api, store, emitter, setBusy }) {
   // A deleted session's pending sends and send queue go with it.
   const forget = (id) => { bySession.delete(id); chains.delete(id); };
 
-  return { deliver, getOutbox, retry, discard, forget };
+  return { deliver, getOutbox, retry, discard, forget, resolveUploads };
 }

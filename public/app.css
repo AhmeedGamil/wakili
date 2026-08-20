@@ -11,6 +11,9 @@
   --fs-ctl: 14.5px;   /* tabs and segmented controls */
   --fs-label: 13.5px; /* small uppercase section labels */
   --fs-meta: 12px;    /* secondary info: counts, hosts, notes */
+  /* project group header row: the collapse button and the + are both this tall,
+     which also makes the + a square exactly matching it */
+  --group-head-h: 36px;
 }
 [data-theme="dark"] {
   --bg: #18181b; --panel: #242428; --panel-2: #303036; --text: #ececec;
@@ -209,20 +212,26 @@ body {
 .sf-file:hover { background: var(--hover); }
 .sf-empty { font-size: 12px; color: var(--muted); padding: 4px 8px 8px; }
 .session-list { padding: 4px 8px; } /* scrolls with the rest of .side-scroll */
-/* project group header: tapping it collapses/expands the group (the chevron
-   turns); only the trailing + starts a chat in that project */
-.group-head { display: flex; align-items: center; gap: 9px; font-size: var(--fs-label); font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--text); padding: 18px 12px 11px; cursor: pointer; border-radius: 10px; }
-.group-head:hover { background: var(--hover); }
-.group-head:first-child { padding-top: 10px; }
-.group-head .group-chev { flex: none; color: var(--muted); }
-.group-head .group-chev svg { transition: transform .15s ease; transform: rotate(90deg); }
+/* project group header: two independent buttons on one row — the title half
+   collapses/expands the group (the chevron turns), the trailing + starts a chat
+   in that project. Both are --group-head-h tall, which makes the + a square
+   matching the title button exactly. */
+.group-head { display: flex; align-items: center; gap: 4px; padding: 10px 4px 3px; }
+.group-head:first-child { padding-top: 2px; }
+/* the collapse half. It is a sibling of the +, never its parent, so its hover
+   stops where the +'s hit area starts (nested, the row's highlight painted
+   behind the + and made a new-chat tap look like a header tap) */
+.group-title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 9px; height: var(--group-head-h); padding: 0 8px; border: 0; border-radius: 10px; background: none; color: var(--text); font: inherit; font-size: var(--fs-label); font-weight: 700; letter-spacing: .04em; text-transform: uppercase; text-align: left; cursor: pointer; }
+.group-title:hover { background: var(--hover); }
+.group-title .group-chev { flex: none; color: var(--muted); }
+.group-title .group-chev svg { transition: transform .15s ease; transform: rotate(90deg); }
 .group-head.closed .group-chev svg { transform: none; }
 .group-label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* session count pill, shown only while the group is closed */
 .group-count { flex: none; font-size: 11px; color: var(--muted); background: var(--panel-2); border-radius: 999px; padding: 1px 7px; letter-spacing: 0; }
-/* the + is a real button with its own generous hit area (negative margin keeps
-   the row height unchanged) */
-.group-add { flex: none; display: inline-flex; align-items: center; justify-content: center; border: 0; background: none; color: var(--text); cursor: pointer; font-size: 20px; line-height: 1; padding: 5px 8px; margin: -5px -4px; border-radius: 8px; }
+/* a square as tall as the title button beside it, so the two read as one row
+   and the whole square — nothing more, nothing less — highlights on hover */
+.group-add { flex: none; width: var(--group-head-h); height: var(--group-head-h); display: inline-flex; align-items: center; justify-content: center; border: 0; padding: 0; background: none; color: var(--text); cursor: pointer; font-size: 24px; line-height: 1; border-radius: 10px; }
 .group-add:hover { background: var(--hover); }
 /* a registered project with no chats under the selected agent — indented to sit
    with the rows it stands in for */
@@ -847,6 +856,53 @@ body {
 .queued-label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .queued-x { display: inline-flex; align-items: center; background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; }
 .queued-x:hover { color: var(--text); }
+
+/* Scheduled tasks: the chip reuses .queued's look; these style the + → Schedule
+   time popover and the manage list (both anchored like .add-menu). */
+.queued.sched { cursor: pointer; }
+.sched-menu { padding: 10px; gap: 8px; }
+.sched-title { font-size: 12.5px; color: var(--muted); padding: 0 2px; }
+.sched-time { font: inherit; color: var(--text); background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; }
+.sched-manage { padding: 8px; gap: 2px; max-height: 40vh; overflow-y: auto; }
+.sched-row { display: flex; align-items: center; gap: 10px; padding: 6px 6px; }
+.sched-info { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.sched-when { font-weight: 600; font-size: 13px; color: var(--text); }
+.sched-text { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+.sched-att { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
+
+/* Scheduled tasks page — every pending job across every chat. Reuses the Files
+   page shell (.fp-overlay/.ft-panel/.fp-head/.ft-body); everything below is the
+   list rows, the empty state and the create/edit dialog stacked above it. */
+.sp-head-actions { display: flex; align-items: center; gap: 2px; }
+.sp-new { font-size: 16px; padding: 2px 8px; }
+.sched-body { display: flex; flex-direction: column; gap: 8px; }
+.sp-row { display: flex; align-items: center; gap: 6px; background: var(--panel-2); border-radius: 14px; padding: 4px 6px 4px 12px; }
+.sp-row.busy { opacity: .55; }
+/* The row body is the edit affordance; the X beside it cancels. */
+.sp-row-main { flex: 1; min-width: 0; display: flex; text-align: start; background: none; border: 0; padding: 8px 0; color: inherit; font: inherit; cursor: pointer; }
+.sp-row-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.sp-row-head svg { color: var(--accent); flex: none; }
+/* Which chat it runs in — pushed right, truncates before the time does. */
+.sp-where { margin-inline-start: auto; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sp-body-text { font-size: 12.5px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.sched-att svg { vertical-align: -2px; margin-inline-end: 4px; }
+.sp-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; padding: 48px 24px; color: var(--muted); }
+.sp-empty svg { width: 40px; height: 40px; opacity: .5; }
+.sp-empty strong { color: var(--text); font-size: 15px; }
+.sp-empty span { font-size: 12.5px; max-width: 30ch; }
+.sp-empty .btn { margin-top: 8px; }
+
+/* Create/edit dialog: its own overlay above the page, so dismissing it leaves
+   the list behind it open. */
+.sp-dialog-overlay { z-index: 61; }
+.sp-dialog { background: var(--panel); border: 1px solid var(--border); border-radius: 18px; box-shadow: 0 20px 56px rgba(0,0,0,.5); width: 420px; max-width: 100%; max-height: 86vh; display: flex; flex-direction: column; overflow: hidden; }
+.sp-dialog-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; overflow-y: auto; }
+.sp-dialog-body .sched-title { margin-top: 6px; }
+.sp-dialog-body .sched-time { align-self: flex-start; }
+.sp-select, .sp-text { font: inherit; color: var(--text); background: var(--panel-2); border: 1px solid var(--border); border-radius: 9px; padding: 8px 10px; width: 100%; }
+.sp-text { resize: vertical; min-height: 62px; }
+.sp-runs { font-size: 12.5px; color: var(--accent); padding: 2px; }
+.sp-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); }
 
 /* interrupted-turn marker */
 .stopped-note { display: inline-block; font-size: 12.5px; color: var(--muted); background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px; padding: 5px 10px; }

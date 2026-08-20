@@ -258,7 +258,9 @@ function startServer() {
     for (const p of srv.pending.values()) { clearTimeout(p.timer); p.reject(new Error("codex app-server exited")); }
     srv.pending.clear();
     for (const [threadId, st] of srv.threads) {
-      if (st.turn) { const t = st.turn; st.turn = null; if (t.onError) t.onError("codex app-server exited"); t.onEvent({ type: "result", session_id: threadId }); if (t.onClose) t.onClose(-1); }
+      // is_error matters: without it this synthetic result made an app-server
+      // crash mid-turn classify as a CLEAN close (no retry, resume disarmed).
+      if (st.turn) { const t = st.turn; st.turn = null; if (t.onError) t.onError("codex app-server exited"); t.onEvent({ type: "result", session_id: threadId, is_error: true, error: "codex app-server exited" }); if (t.onClose) t.onClose(-1); }
     }
     srv.threads.clear();
     srv.sessions.clear();

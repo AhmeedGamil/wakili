@@ -57,21 +57,6 @@ export const api = {
   autostart: () => call("GET", "/api/autostart"),
   setAutostart: (on) => call("POST", "/api/autostart", { on }),
   listSessions: () => call("GET", "/api/sessions"),
-  // Chats started in a terminal on the host, a page at a time (newest first).
-  // The gateway filters out the ones Wakili itself created — they'd otherwise
-  // come back as "host" chats, since every Wakili chat writes a host transcript.
-  hostSessions: ({ cursor = "", agentId = "", limit = 5, all = false } = {}) => {
-    const q = new URLSearchParams();
-    if (cursor) q.set("cursor", cursor);
-    if (agentId) q.set("agentId", agentId);
-    if (limit) q.set("limit", String(limit));
-    if (all) q.set("all", "1");
-    const qs = q.toString();
-    return call("GET", `/api/host-sessions${qs ? "?" + qs : ""}`);
-  },
-  // Continue a host chat here: binds a new Wakili session to the same agent-side
-  // resume id and imports its transcript for display.
-  adoptHostSession: (id) => call("POST", `/api/host-sessions/${id}/adopt`),
   createSession: (body) => call("POST", "/api/sessions", body || {}),
   // opts: { since, after } — conditional/delta fetch. With `since` the server
   // answers { unchanged: true } when nothing moved; with `after` it sends only
@@ -85,9 +70,20 @@ export const api = {
   },
   renameSession: (id, title) => call("PATCH", `/api/sessions/${id}`, { title }),
   setCwd: (id, cwd) => call("PATCH", `/api/sessions/${id}`, { cwd }),
-  // "Allow always" is stored on the gateway (the server auto-approves), so it
-  // works even when no client is awake to answer the card.
-  setAutoAllow: (id, on) => call("PATCH", `/api/sessions/${id}`, { autoAllow: !!on }),
+  // "Auto continue" — stored on the gateway (which re-drives a limit-killed
+  // turn once quota returns), so it works with no client awake. ON by default:
+  // only an explicit false is ever sent.
+  setAutoContinue: (id, on) => call("PATCH", `/api/sessions/${id}`, { autoContinue: !!on }),
+  // One-shot scheduled task at epoch-millis `at`; also flips autoContinue on.
+  // `attachments` are uploaded {name, path, url} files that ride with the job.
+  schedule: (id, text, at, attachments) => call("POST", `/api/sessions/${id}/schedule`, { text, at, attachments }),
+  scheduledJobs: (id) => call("GET", `/api/sessions/${id}/schedule`),
+  // Every pending task across every chat (the Scheduled tasks page). Each job
+  // carries its sessionTitle so the list can say WHERE it will run.
+  allScheduledJobs: () => call("GET", "/api/schedule"),
+  // Edit a pending task's text and/or time. Attachments stay as scheduled.
+  updateScheduled: (jobId, text, at) => call("PATCH", `/api/schedule/${jobId}`, { text, at }),
+  cancelScheduled: (jobId) => call("DELETE", `/api/schedule/${jobId}`),
   // Persist the picker state (agent + controls) on change, not just at send.
   saveControls: (id, agentId, controls) => call("PATCH", `/api/sessions/${id}`, { agentId, controls }),
   folders: (path) => call("GET", `/api/folders?path=${encodeURIComponent(path || "")}`),

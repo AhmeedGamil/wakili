@@ -19,7 +19,7 @@
 import http from "node:http";
 import path from "node:path";
 import { config, ROOT } from "../config.mjs";
-import { claudeAgent, THINKING, PHONE_DIRECTIVE } from "./claude.mjs";
+import { claudeAgent, THINKING, PHONE_DIRECTIVE, ORPHAN_BUFFER_MAX, CARD_WAIT_MS, HOOK_TIMEOUT_SECS } from "./claude.mjs";
 
 const MCP_SERVER = path.join(ROOT, "src", "mcp-tools.mjs").replace(/\\/g, "/");
 
@@ -47,7 +47,9 @@ function askPermission(gatewayUrl, sessionId, tool, input) {
       }
     );
     req.on("error", () => resolve({ decision: "deny", reason: null }));
-    req.setTimeout(125000, () => { req.destroy(); resolve({ decision: "deny", reason: null }); });
+    // Outlives the gateway's PERMISSION_WAIT_MS so the gateway's (long,
+    // sleep-friendly) wait is the layer that decides — not this socket.
+    req.setTimeout(CARD_WAIT_MS + 60_000, () => { req.destroy(); resolve({ decision: "deny", reason: null }); });
     req.write(payload);
     req.end();
   });
@@ -64,7 +66,7 @@ let sdkQuery = null; // cached SDK query() after first lazy import
 // next message cold-starts with resume, losing nothing. Reuse also requires the
 // caller's resumeId to be the thread the query is already on (guards agent
 // switches, which null it).
-const warm = new Map(); // sessionId -> { channel, q, key, threadId, turn, idleTimer, alive, handle }
+const warm = new Map(); // sessionId -> { channel, q, key, threadId, turn, idleTimer, alive, handle, adopt, orphans }
 
 // Async-iterable push channel — the streaming-input prompt. push() delivers the
 // next user message; close() ends the stream, letting the query finish cleanly.
@@ -125,7 +127,7 @@ export const claudeSdkAgent = {
   // server's killTree/stop expects; kill() discards the whole warm session
   // (matching the CLI adapter, where stop kills the process) — the turn's
   // onClose fires as the reader unwinds, and the next message resumes cold.
-  run({ text, controls = {}, resumeId, sessionId, cwd, gatewayUrl, onEvent, onError, onClose }) {
+  run({ text, controls = {}, resumeId, sessionId, cwd, gatewayUrl, onEvent, onError, onClose, adoptTurn }) {
     const keyword = THINKING[controls.thinking] || "";
     const prompt = keyword ? `${text}\n\n${keyword}` : text;
 
@@ -137,6 +139,7 @@ export const claudeSdkAgent = {
       if (existing.alive && !existing.turn && existing.key === key && resumeId === existing.threadId) {
         clearTimeout(existing.idleTimer);
         existing.turn = { onEvent, onError, onClose };
+        existing.adopt = adoptTurn || existing.adopt;
         existing.channel.push(userMessage(prompt));
         return existing.handle;
       }
@@ -145,7 +148,7 @@ export const claudeSdkAgent = {
     }
 
     const channel = messageChannel();
-    const entry = { channel, q: null, key, threadId: resumeId || null, turn: { onEvent, onError, onClose }, idleTimer: null, alive: true, handle: null };
+    const entry = { channel, q: null, key, threadId: resumeId || null, turn: { onEvent, onError, onClose }, idleTimer: null, alive: true, handle: null, adopt: adoptTurn || null, orphans: [] };
     entry.handle = {
       killed: false,
       kill() { this.killed = true; if (warm.get(sessionId) === entry) warm.delete(sessionId); disposeWarm(entry); },
@@ -184,9 +187,9 @@ export const claudeSdkAgent = {
           hooks: {
             PreToolUse: [{
               matcher: "Bash|Write|Edit|MultiEdit|NotebookEdit",
-              // Seconds. Must outlive askPermission's 125s wait, or an unanswered
+              // Seconds. Must outlive askPermission's wait, or an unanswered
               // card would be cut off before the gateway's own timeout decides.
-              timeout: 130,
+              timeout: HOOK_TIMEOUT_SECS,
               hooks: [async (hookInput) => {
                 const { decision, reason } = await askPermission(gatewayUrl, sessionId, hookInput.tool_name, hookInput.tool_input);
                 return {
@@ -205,7 +208,10 @@ export const claudeSdkAgent = {
           mcpServers: {
             wakili: {
               type: "stdio", command: "node", args: [MCP_SERVER],
-              env: { ...process.env, WAKILI_SESSION: sessionId, WAKILI_GATEWAY: gatewayUrl, WAKILI_TOKEN: config.token },
+              // ask_options blocks its MCP call while the gateway waits on the
+              // user — neither the call timeout nor the idle timeout (which
+              // killed a quiet 30-minute wait) may cut it short.
+              env: { ...process.env, WAKILI_SESSION: sessionId, WAKILI_GATEWAY: gatewayUrl, WAKILI_TOKEN: config.token, MCP_TOOL_TIMEOUT: String(CARD_WAIT_MS + 120_000), CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT: String(CARD_WAIT_MS + 120_000) },
             },
           },
           canUseTool: async (toolName, input) => {
@@ -226,8 +232,25 @@ export const claudeSdkAgent = {
         for await (const msg of q) {
           if (!entry.alive) break;
           if (msg.type === "result" && msg.session_id) entry.threadId = msg.session_id; // the thread this query now carries
-          const t = entry.turn;
-          if (t) t.onEvent(msg); // SDK messages share the CLI's shape; runTurn handles them
+          // Agent-initiated continuation adoption — same rules as the CLI
+          // adapter (see claude.mjs): only unambiguous model output opens a
+          // turn, and misses are buffered until the gateway can take it.
+          if (!entry.turn && entry.adopt && (msg.type === "stream_event" || msg.type === "assistant")) {
+            entry.orphans.push(msg);
+            const io = entry.adopt(entry.handle);
+            if (io) {
+              clearTimeout(entry.idleTimer); // live again — no idle reap mid-turn
+              entry.turn = io;
+              const buffered = entry.orphans;
+              entry.orphans = [];
+              for (const e of buffered) io.onEvent(e);
+            } else if (entry.orphans.length > ORPHAN_BUFFER_MAX) {
+              entry.orphans.shift();
+            }
+          } else {
+            const t = entry.turn;
+            if (t) t.onEvent(msg); // SDK messages share the CLI's shape; runTurn handles them
+          }
           if (msg.type === "result") endTurn(); // turn done; query stays open for the next push
         }
       } catch (e) {

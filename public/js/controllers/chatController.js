@@ -15,11 +15,9 @@ import { createDeviceController } from "./device.js";
 // is shown as its own interactive question card, so it's suppressed here too.
 const GATED = new Set(["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit", "AskUserQuestion", "mcp__wakili__ask_options", "ask_options"]);
 
-// "Allow always" — PER SESSION, stored on the GATEWAY (session.autoAllow), not
-// in this client: the server auto-approves at the permission hook, so it keeps
-// working while the phone/tab is backgrounded or closed. Both old client-side
-// switches are retired — remove them so nobody stays silently auto-allowing
-// from a setting the server can no longer see.
+// Blanket auto-approval of permission cards is gone from the UI. Clear the two
+// old client-side switches on sight so nobody is left silently auto-allowing
+// from a setting nothing renders any more.
 setPref("ra-auto-allow", null);
 setPref("ra-auto-allow-sessions", null);
 
@@ -339,7 +337,7 @@ export function createChatController({ api, store, emitter }) {
       const agentId = s.agentId || st.agentId;
       const agent = st.agents.find((a) => a.id === agentId);
       const unreadIds = { ...st.unreadIds }; delete unreadIds[id];
-      return { activeId: id, activeSession: s, agentId, unreadIds, autoAllow: !!s.autoAllow, controls: normalizeControls(agent, { ...defaultsFor(agent), ...(s.controls || {}) }), files: { received: [], uploaded: [] } };
+      return { activeId: id, activeSession: s, agentId, unreadIds, autoContinue: s.autoContinue !== false, controls: normalizeControls(agent, { ...defaultsFor(agent), ...(s.controls || {}) }), files: { received: [], uploaded: [] } };
     });
     saveLastConfig(); // the session you're on becomes the default for new chats
     emitter.emit("historyLoaded", s.messages);
@@ -552,17 +550,105 @@ export function createChatController({ api, store, emitter }) {
     persistControls();
   }
 
-  // Toggle "Allow always" for the ACTIVE session only. Persisted on the GATEWAY,
-  // which auto-approves at the permission hook — so it keeps working while this
-  // client is backgrounded. Turning it on also answers any cards already open.
-  function setAutoAllow(on) {
+  // "Auto continue" — per-chat, ON by default and persisted on the GATEWAY: a
+  // turn this chat loses to the usage limit is re-driven once quota returns,
+  // whether or not this client is still around to watch.
+  function setAutoContinue(on) {
     const id = store.get().activeId;
     if (!id) return;
-    store.set({ autoAllow: !!on });
-    api.setAutoAllow(id, on).catch(() => {
+    store.set({ autoContinue: !!on });
+    api.setAutoContinue(id, on).catch(() => {
       // The gateway never heard the change — reflect reality, not the wish.
-      if (store.get().activeId === id) store.set({ autoAllow: !on });
+      if (store.get().activeId === id) store.set({ autoContinue: !on });
     });
+  }
+
+  // ---- scheduled tasks (gateway-side, survive restarts) ----
+
+  // Schedule the composer text (+ any attached files) for `at` (epoch ms). The
+  // gateway also flips the chat's autoContinue on, so an unattended task
+  // finishes through quota walls. Files are already uploaded (eagerly, on
+  // pick); any still in flight are awaited here so the job carries real paths.
+  async function scheduleTask(text, at, raw) {
+    const id = store.get().activeId;
+    raw = raw || [];
+    if (!id || (!text && !raw.length)) return false;
+    let attachments = [];
+    try {
+      attachments = await outbox.resolveUploads(id, raw);
+    } catch (e) {
+      emitter.emit("toast", `Couldn't upload ${e.message} — retry it, then schedule again`);
+      return false;
+    }
+    try {
+      const r = await api.schedule(id, text, at, attachments);
+      if (r && r.session) store.set({ activeSession: r.session, autoContinue: true });
+      emitter.emit("toast", "Scheduled for " + new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+      return true;
+    } catch {
+      emitter.emit("toast", "Couldn't schedule — check the connection");
+      return false;
+    }
+  }
+
+  async function loadScheduled() {
+    const id = store.get().activeId;
+    if (!id) return [];
+    try { return (await api.scheduledJobs(id)).jobs || []; } catch { return []; }
+  }
+
+  async function cancelScheduled(jobId) {
+    try { await api.cancelScheduled(jobId); } catch { /* row stays; retry by reopening */ }
+    sessionCache.refresh(store.get().activeId);
+  }
+
+  // ---- Scheduled tasks page: every chat's jobs, not just the open one ----
+  // These differ from the composer's three above by not assuming activeId — the
+  // page can create, edit and cancel tasks in chats that aren't even open, so
+  // each one refreshes the session LIST (which carries the "N scheduled" count)
+  // rather than just the active session's cache.
+
+  async function loadAllScheduled() {
+    try { return (await api.allScheduledJobs()).jobs || []; } catch { return []; }
+  }
+
+  // Create in an explicitly chosen chat. No attachments: the page has no
+  // upload surface, so attachments stay the composer's job.
+  async function createScheduled(sessionId, text, at) {
+    if (!sessionId || !text) return false;
+    try {
+      const r = await api.schedule(sessionId, text, at, []);
+      // Scheduling flips autoContinue on server-side; mirror that locally when
+      // the target happens to be the chat currently on screen.
+      if (r && r.session && sessionId === store.get().activeId) {
+        store.set({ activeSession: r.session, autoContinue: true });
+      }
+      emitter.emit("toast", "Scheduled for " + new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+      refreshSessions();
+      return true;
+    } catch {
+      emitter.emit("toast", "Couldn't schedule — check the connection");
+      return false;
+    }
+  }
+
+  async function updateScheduled(jobId, text, at) {
+    try {
+      await api.updateScheduled(jobId, text, at);
+      emitter.emit("toast", "Task updated");
+      refreshSessions();
+      return true;
+    } catch {
+      emitter.emit("toast", "Couldn't update the task — check the connection");
+      return false;
+    }
+  }
+
+  // Cancel from the page: the job may belong to any chat, so refresh the list.
+  async function cancelScheduledAnywhere(jobId) {
+    try { await api.cancelScheduled(jobId); }
+    catch { return emitter.emit("toast", "Couldn't cancel — check the connection"); }
+    refreshSessions();
   }
 
   // Switching agent happens IN PLACE: you stay in the same chat and its history
@@ -725,10 +811,13 @@ export function createChatController({ api, store, emitter }) {
 
   return {
     init, openSession, newSession, renameSession, deleteSession, refreshSessions,
-    send, execTerm, stopActive, cancelQueued, setControl, setAutoAllow, setAgent,
+    send, execTerm, stopActive, cancelQueued, setControl, setAutoContinue,
+    scheduleTask, loadScheduled, cancelScheduled, setAgent,
+    loadAllScheduled, createScheduled, updateScheduled, cancelScheduledAnywhere,
     pickModel, answerPermission, answerQuestion, browseFolders, createFolder,
     setCwd, removeUpload, refreshProjects, forgetProject,
     // Device controls (Settings → Device rows render through these).
+    refreshDevice: device.refreshDevice,
     lockScreen: device.lockScreen, screenOff: device.screenOff,
     shutdownComputer: device.shutdownComputer, setKeepAwake: device.setKeepAwake,
     setAutostart: device.setAutostart,

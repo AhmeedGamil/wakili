@@ -20,16 +20,10 @@ import { el, dismissFirst, backdropFor } from "./dom.js";
 import { icon } from "./icons.js";
 import { KEYS, getPref, setPref, getJSON, setJSON, putSession } from "../core/prefs.js";
 
-export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDelete, onRename, onOpenFiles, onAppearance, onOpenConnect, onRetrySessions, onLoadHost, onAdoptHost }) {
+export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDelete, onRename, onOpenFiles, onOpenSchedule, onAppearance, onOpenConnect, onRetrySessions }) {
   let view = getPref(KEYS.sessionView) === "all" ? "all" : "project";
   let showModel = getPref(KEYS.sessionModel) === "1";
   let tabAgent = getPref(KEYS.homeAgent) || "claude"; // the selected agent tab — new chats use it, the list filters by it
-  // The list opens at the latest few and grows on demand, so a long history
-  // never costs a wall of rows before the chat you actually want.
-  const PAGE = 5;
-  let ownShown = PAGE;
-  // "From the host" section state (lazily loaded — see renderHostSection).
-  const host = { open: getPref(KEYS.hostOpen) === "1", rows: [], cursor: "", total: 0, loading: false, loaded: false, error: false, adopting: new Set() };
   let last = { sessions: [], activeId: null, busyIds: {}, unreadIds: {}, agents: [], projects: [], sessionsState: "loading" }; // cached for re-render on toggle
 
   // Agent tabs: the agent is chosen HERE, on the home page — the chat page
@@ -49,12 +43,7 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
         onClick: () => {
           if (a.id === tabAgent) return;
           tabAgent = a.id; setPref(KEYS.homeAgent, tabAgent);
-          // A different agent is a different list: start both back at page one
-          // rather than showing this agent's chats under the other's paging.
-          ownShown = PAGE;
-          host.rows = []; host.cursor = ""; host.total = 0; host.loaded = false;
           renderTabs(); renderSessions();
-          if (host.open) loadHost(true);
         },
       }));
     }
@@ -176,6 +165,8 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
   const menu = el("div", { class: "sess-pop side-menu" },
     el("button", { type: "button", onClick: () => { closeMenu(); onNew && onNew(); } },
       icon("folder"), el("span", { class: "sess-opt", text: "Select project" })),
+    el("button", { type: "button", onClick: () => { closeMenu(); onOpenSchedule && onOpenSchedule(); } },
+      icon("clock"), el("span", { class: "sess-opt", text: "Scheduled tasks" })),
     el("button", { type: "button", onClick: () => { closeMenu(); onOpenFiles && onOpenFiles(); } },
       icon("file-text"), el("span", { class: "sess-opt", text: "Files" }), brandFilesCount),
     el("button", { type: "button", onClick: () => { closeMenu(); onAppearance && onAppearance(); } },
@@ -351,21 +342,16 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
         el("span", { text: `No ${label} chats yet — start one with New chat.` })));
       return;
     }
-    // Show the latest few and let the user ask for more, in BOTH views: the cap
-    // is applied to the flat newest-first list before grouping, so "the latest
-    // N" means the same thing either way.
-    const shown = sessions.slice(0, ownShown);
-    const moreOwn = sessions.length - shown.length;
-
+    // Every chat this agent has, in BOTH views — no paging. The list IS the
+    // history: a chat you can't see without asking for it might as well not be
+    // there, and they all arrive together in one /api/sessions anyway.
     if (view === "all") {
       // Flat, newest-first (server order), each row tagged "folder · time-ago".
-      for (const s of shown) {
+      for (const s of sessions) {
         const folder = s.cwd ? baseName(s.cwd) : "Default project";
         const ago = timeAgo(s.updatedAt);
         list.appendChild(sessionRow(s, activeId, busyIds, unreadIds, ago ? folder + " · " + ago : folder));
       }
-      if (moreOwn > 0) list.appendChild(loadMoreBtn(moreOwn, () => { ownShown += PAGE; renderSessions(); }));
-      renderHostSection();
       return;
     }
     // By project: group by folder. The header collapses/expands its group
@@ -386,7 +372,7 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
       if (!groups.has(k)) groups.set(k, { cwd: cwd || null, label: label || (cwd ? baseName(cwd) : "Default project"), items: [] });
       return groups.get(k);
     };
-    for (const s of shown) ensure(s.cwd);
+    for (const s of sessions) ensure(s.cwd).items.push(s);
     for (const pr of last.projects) ensure(pr.path, pr.name);
     // Projects with chats stay ordered by recency (the server sorts sessions
     // newest first, so insertion order already carries it); empty ones sink to
@@ -396,16 +382,21 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
       const label = group.label;
       const key = group.cwd || "";
       const closed = collapsed.has(key);
-      list.appendChild(el("div", {
-        class: "group-head" + (closed ? " closed" : ""),
-        onClick: () => toggleGroup(key),
-      },
-        icon("chevron-right", "group-chev"),
-        el("span", { class: "group-label", text: label }),
-        closed ? el("span", { class: "group-count", text: String(group.items.length) }) : null,
+      // Two SIBLING buttons, not a clickable row with a button inside it: the
+      // title button owns the collapse tap and the + owns the new-chat tap, so
+      // each highlights only its own area (nesting made the row's hover paint
+      // behind the +, which read as tapping the header).
+      list.appendChild(el("div", { class: "group-head" + (closed ? " closed" : "") },
+        el("button", {
+          class: "group-title", type: "button", title: label,
+          onClick: () => toggleGroup(key),
+        },
+          icon("chevron-right", "group-chev"),
+          el("span", { class: "group-label", text: label }),
+          closed ? el("span", { class: "group-count", text: String(group.items.length) }) : null),
         el("button", {
           class: "group-add", type: "button", title: "New chat in " + (group.cwd || "the default project"),
-          onClick: (e) => { e.stopPropagation(); onNewInFolder(group.cwd); },
+          onClick: () => onNewInFolder(group.cwd),
         }, icon("plus"))));
       if (!closed) {
         for (const s of group.items) list.appendChild(sessionRow(s, activeId, busyIds, unreadIds));
@@ -414,99 +405,6 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
         if (!group.items.length) list.appendChild(el("div", { class: "group-empty", text: "No chats yet — tap + to start one." }));
       }
     }
-    if (moreOwn > 0) list.appendChild(loadMoreBtn(moreOwn, () => { ownShown += PAGE; renderSessions(); }));
-    renderHostSection();
-  }
-
-  // "Load more (N)" — one recipe for both lists.
-  function loadMoreBtn(remaining, onClick, busy = false) {
-    return el("button", { class: "sess-more", type: "button", disabled: busy ? "" : null, onClick },
-      busy ? el("span", { class: "spinner" }) : null,
-      el("span", { text: busy ? "Loading…" : `Load more (${remaining})` }));
-  }
-
-  // ---- From the host --------------------------------------------------------
-  // Chats started in a terminal on the host machine. They live in their OWN
-  // section under your chats, never merged into them: work you do at the desk
-  // must never reorder the list you were just using on the phone. Collapsed by
-  // default and loaded only when opened — the scan is the gateway's to pay for,
-  // and only when asked.
-  function renderHostSection() {
-    if (!onLoadHost) return;
-    const open = host.open;
-    const head = el("div", { class: "group-head host-head" + (open ? "" : " closed"), onClick: toggleHost },
-      icon("chevron-right", "group-chev"),
-      icon("monitor", "host-ico"),
-      el("span", { class: "group-label", text: "From the host" }),
-      host.total ? el("span", { class: "group-count", text: String(host.total) }) : null);
-    list.appendChild(head);
-    if (!open) return;
-    if (host.error) {
-      list.appendChild(el("div", { class: "group-empty" },
-        el("span", { text: "Couldn't read the host's sessions. " }),
-        el("button", { class: "linkish", type: "button", onClick: () => loadHost(true) }, "Try again")));
-      return;
-    }
-    for (const s of host.rows) list.appendChild(hostRowEl(s));
-    if (host.loading) list.appendChild(el("div", { class: "group-empty" }, el("span", { class: "spinner" })));
-    else if (!host.rows.length) list.appendChild(el("div", { class: "group-empty", text: "No chats started on the host in your projects." }));
-    else if (host.cursor) list.appendChild(loadMoreBtn(Math.max(0, host.total - host.rows.length), () => loadHost(), false));
-  }
-
-  // A host row reads like a chat row but says where it came from, and tapping it
-  // ADOPTS it — the chat becomes yours and moves up into the list above.
-  function hostRowEl(s) {
-    const busy = host.adopting.has(s.id);
-    const folder = s.cwd ? baseName(s.cwd) : "Default project";
-    const ago = timeAgo(s.updatedAt);
-    const row = el("div", { class: "session host-row" + (busy ? " busy" : ""), title: "Continue this host chat here",
-      onClick: () => { if (!busy) adopt(s); } },
-      el("div", { class: "s-main" },
-        el("div", { class: "s-title", text: s.title }),
-        el("span", { class: "s-badge", text: ago ? folder + " · " + ago : folder })),
-      busy ? el("span", { class: "spinner" }) : icon("corner-up-left", "host-adopt"));
-    return row;
-  }
-
-  async function adopt(s) {
-    host.adopting.add(s.id);
-    renderSessions();
-    try {
-      await onAdoptHost(s.id);
-      // It's a Wakili chat now — drop it from this section rather than waiting
-      // for a refetch to notice.
-      host.rows = host.rows.filter((r) => r.id !== s.id);
-      host.total = Math.max(0, host.total - 1);
-    } catch { /* the row stays; the user can try again */ }
-    host.adopting.delete(s.id);
-    renderSessions();
-  }
-
-  function toggleHost() {
-    host.open = !host.open;
-    setPref(KEYS.hostOpen, host.open ? "1" : "0");
-    if (host.open && !host.loaded) loadHost();
-    else renderSessions();
-  }
-
-  // Fetch the next page (or restart from scratch after a tab switch / retry).
-  async function loadHost(reset = false) {
-    if (host.loading) return;
-    if (reset) { host.rows = []; host.cursor = ""; host.total = 0; }
-    host.loading = true;
-    host.error = false;
-    renderSessions();
-    try {
-      const page = await onLoadHost({ cursor: host.cursor || "", agentId: tabs.hidden ? "" : tabAgent, limit: PAGE });
-      host.rows = host.rows.concat(page.sessions || []);
-      host.cursor = page.nextCursor || "";
-      host.total = page.total || host.rows.length;
-      host.loaded = true;
-    } catch {
-      host.error = true;
-    }
-    host.loading = false;
-    renderSessions();
   }
 
   // Collapsed project groups, keyed by cwd ("" = default project); survives

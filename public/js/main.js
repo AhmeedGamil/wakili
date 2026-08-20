@@ -14,6 +14,7 @@ import { createTopbar } from "./components/Topbar.js";
 import { createModelPicker } from "./components/ModelPicker.js";
 import { createFolderPicker } from "./components/FolderPicker.js";
 import { createFilesPage } from "./components/FilesPage.js";
+import { createSchedulePage } from "./components/SchedulePage.js";
 import { createTerminalPage } from "./components/TerminalPage.js";
 import { createEndpointMenu } from "./components/EndpointMenu.js";
 import { createDeviceMenu } from "./components/DeviceMenu.js";
@@ -27,8 +28,9 @@ import { showGuide } from "./components/Guide.js";
 import { createGuideSteps } from "./components/guideSteps.js";
 import { createConnectionBanner } from "./components/ConnectionBanner.js";
 
-// autoAllow is per-session; applySession loads the active session's value.
-const store = createStore({ sessions: [], sessionsState: "loading", activeId: null, activeSession: null, agents: [], agentId: "claude", projects: [], controls: {}, busyIds: {}, queued: {}, unreadIds: {}, autoAllow: false, connected: true, files: { received: [], uploaded: [] }, allFiles: [], power: { platform: "", keepAwake: false }, autostart: { supported: false, on: false } });
+// autoContinue is per-session and defaults ON; applySession loads the active
+// session's value.
+const store = createStore({ sessions: [], sessionsState: "loading", activeId: null, activeSession: null, agents: [], agentId: "claude", projects: [], controls: {}, busyIds: {}, queued: {}, unreadIds: {}, autoContinue: true, connected: true, files: { received: [], uploaded: [] }, allFiles: [], power: { platform: "", keepAwake: false }, autostart: { supported: false, on: false } });
 const emitter = createEmitter();
 const controller = createChatController({ api, store, emitter });
 
@@ -59,19 +61,10 @@ const sidebar = createSidebar({
   onNewLast: () => startChat(store.get().activeSession?.effectiveCwd || null),
   onNewInFolder: (cwd) => startChat(cwd),
   onSelect: (id) => { document.body.classList.remove("nav-open"); controller.openSession(id); },
-  // "From the host": one page of terminal-started chats, and adopting one —
-  // which creates a real Wakili chat bound to that session and opens it.
-  onLoadHost: (opts) => api.hostSessions(opts),
-  onAdoptHost: async (id) => {
-    const s = await api.adoptHostSession(id);
-    document.body.classList.remove("nav-open");
-    await controller.refreshSessions();
-    await controller.openSession(s.id);
-    return s;
-  },
   onDelete: (id) => controller.deleteSession(id),
   onRename: (id, title) => controller.renameSession(id, title),
   onOpenFiles: () => filesPage.open(),
+  onOpenSchedule: () => schedulePage.open(),
   onAppearance: () => appearanceMenu.open(),
   onOpenConnect: () => appearanceMenu.openTab("connection"),
   onRetrySessions: () => { store.set({ sessionsState: "loading" }); controller.refreshSessions(); },
@@ -83,7 +76,7 @@ const picker = createModelPicker({
   onSwitchAgent: (id) => controller.setAgent(id),
   onPickModel: (agentId, model) => controller.pickModel(agentId, model),
   onControlChange: (key, value) => controller.setControl(key, value),
-  onToggleAutoAllow: (v) => controller.setAutoAllow(v),
+  onToggleAutoContinue: (v) => controller.setAutoContinue(v),
 });
 const folderPicker = createFolderPicker({
   onBrowse: (path) => controller.browseFolders(path),
@@ -108,6 +101,15 @@ const filesPage = createFilesPage({
     api.files().then((all) => store.set({ allFiles: all })).catch(() => { /* next refresh catches up */ });
   },
 });
+// Scheduled tasks across every chat, opened from the sidebar's ☰ menu. The
+// composer's + → Schedule still handles "schedule what I'm typing, here"; this
+// page is where tasks already made get edited or cancelled.
+const schedulePage = createSchedulePage({
+  onLoad: () => controller.loadAllScheduled(),
+  onCreate: (sessionId, text, at) => controller.createScheduled(sessionId, text, at),
+  onUpdate: (jobId, text, at) => controller.updateScheduled(jobId, text, at),
+  onCancel: (jobId) => controller.cancelScheduledAnywhere(jobId),
+});
 const terminalPage = createTerminalPage({ // full-screen shell, opened from the composer's + menu
   onRun: (command, cwd) => controller.execTerm(command, cwd),
 });
@@ -129,7 +131,15 @@ const appearanceMenu = createAppearanceMenu({ // connection/device rows + format
   getFormat: () => getPref(KEYS.markdown, "1") !== "0",
   onToggleFormat: (on) => messageList.setMarkdown(on),
   renderConnections: (c) => endpointMenu.render(c),
-  renderDevice: (c) => deviceMenu.render(c),
+  renderDevice: (c) => {
+    deviceMenu.render(c);
+    // Paint the snapshot we have, then correct it with the gateway's live
+    // state: keep-awake and start-at-login can both change on the laptop (or
+    // from the phone) while this tab sits on a value read at boot.
+    // The repaint must not land on a tab the user has since left: the panel
+    // reuses ONE content node, so check our own rows are still the ones in it.
+    controller.refreshDevice().then(() => { if (c.querySelector(".dev-list")) deviceMenu.render(c); });
+  },
   onShowGuide: () => showGuide(guideSteps(), { onEnd: () => appearanceMenu.close() }),
 });
 
@@ -148,6 +158,10 @@ const composer = createComposer({
   onSend: (t, attachments) => controller.send(t, attachments),
   onStop: () => controller.stopActive(),
   onCancelQueued: () => controller.cancelQueued(),
+  // Scheduled tasks: gateway-side one-shots (see src/schedule.mjs).
+  onSchedule: (t, at, raw) => controller.scheduleTask(t, at, raw),
+  onLoadScheduled: () => controller.loadScheduled(),
+  onCancelScheduled: (id) => controller.cancelScheduled(id),
   onOpenTerminal: () => terminalPage.open(store.get().activeSession?.effectiveCwd || ""),
   // Eager attachment uploads: start on pick (progress ring on the card), undo
   // on remove — the upload belongs to whichever session the file was picked in.
@@ -227,6 +241,9 @@ const backLayers = [
   // Full-screen / modal overlays.
   { isOpen: () => folderPicker.isOpen(), close: () => folderPicker.close() },
   { isOpen: () => filesPage.isOpen(), close: () => filesPage.close() },
+  // The create/edit dialog closes before the page under it.
+  { isOpen: () => schedulePage.dialogOpen(), close: () => schedulePage.closeDialog() },
+  { isOpen: () => schedulePage.isOpen(), close: () => schedulePage.close() },
   // Terminal's own layers close before the page itself: close-tab confirm,
   // then the "/" history menu, then the whole terminal.
   { isOpen: () => terminalPage.confirmOpen(), close: () => terminalPage.hideConfirm() },
@@ -368,14 +385,16 @@ store.subscribe((s) => {
   topbar.setConnected(s.connected);
   connBanner.set(s.connected);
   filesPage.render(s.allFiles);
+  schedulePage.render(s.sessions); // the create dialog's "Run in" list
   composer.setBusy(!!s.busyIds[s.activeId]);   // only the active session's busy gates the composer
   composer.setQueued(s.queued[s.activeId]);    // its pending (queued) message, if any
+  composer.setScheduled(s.activeSession ? (s.activeSession.scheduled || 0) : 0);
   topbar.setFolder(s.activeSession ? s.activeSession.effectiveCwd : "");
   // re-render the picker only when its inputs actually change (avoids churn)
-  const key = s.agents.length + "|" + s.agentId + "|" + JSON.stringify(s.controls) + "|" + s.autoAllow;
+  const key = s.agents.length + "|" + s.agentId + "|" + JSON.stringify(s.controls) + "|" + s.autoContinue;
   if (key !== lastPick && s.agents.length) {
     lastPick = key;
-    picker.render({ agents: s.agents, agentId: s.agentId, controls: s.controls, autoAllow: s.autoAllow });
+    picker.render({ agents: s.agents, agentId: s.agentId, controls: s.controls, autoContinue: s.autoContinue });
     const agent = s.agents.find((a) => a.id === s.agentId);
     composer.setCommands(agent?.commands || []);   // slash menu = the active agent's real commands
   }

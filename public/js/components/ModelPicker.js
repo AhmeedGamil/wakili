@@ -7,7 +7,7 @@
 import { el, dismissFirst, backdropFor } from "./dom.js";
 import { createDropdown } from "./Dropdown.js";
 
-export function createModelPicker({ onSwitchAgent, onPickModel, onControlChange, onToggleAutoAllow }) {
+export function createModelPicker({ onSwitchAgent, onPickModel, onControlChange, onToggleAutoContinue }) {
   const current = el("span", { class: "pick-current", text: "Model" });
   const trigger = el("button", { class: "picker-trigger", type: "button" }, current, el("span", { class: "pick-caret", text: "▾" }));
   const pop = el("div", { class: "picker-pop", hidden: "" });
@@ -19,7 +19,7 @@ export function createModelPicker({ onSwitchAgent, onPickModel, onControlChange,
   trigger.addEventListener("click", (e) => { e.stopPropagation(); setOpen(!open); });
   dismissFirst(() => open, (t) => root.contains(t), () => setOpen(false));
 
-  function render({ agents, agentId, controls, autoAllow }) {
+  function render({ agents, agentId, controls, autoContinue }) {
     const agent = agents.find((a) => a.id === agentId) || agents[0];
     const modelOpts = agent?.controls?.model?.options || [];
     const curM = modelOpts.find((o) => o.value === controls.model);
@@ -42,13 +42,14 @@ export function createModelPicker({ onSwitchAgent, onPickModel, onControlChange,
       mk({ label: c.label, options, value: controls[key] != null ? controls[key] : c.default, onChange: (v) => onControlChange(key, v) });
     }
 
-    // "Allow always" — a plain on/off switch (not an agent control; it governs the
-    // gateway's permission cards). When on, incoming permissions auto-approve.
-    const knob = el("button", { class: "switch" + (autoAllow ? " on" : ""), type: "button", role: "switch", "aria-checked": autoAllow ? "true" : "false", tabindex: "-1" }, el("span", { class: "sw-knob" }));
-    const swRow = el("div", { class: "switch-row" }, el("span", { class: "switch-label", text: "Allow always" }), knob);
+    // "Auto continue" — a plain on/off switch, not an agent control: a turn this
+    // chat loses to the usage limit is re-driven by the gateway once quota
+    // returns. On by default; the switch is how a chat opts out.
+    const acKnob = el("button", { class: "switch" + (autoContinue ? " on" : ""), type: "button", role: "switch", "aria-checked": autoContinue ? "true" : "false", tabindex: "-1" }, el("span", { class: "sw-knob" }));
+    const acRow = el("div", { class: "switch-row" }, el("span", { class: "switch-label", text: "Auto continue" }), acKnob);
     // The whole row is the hit area — the knob alone is too small on phones.
-    swRow.addEventListener("click", (e) => { e.stopPropagation(); onToggleAutoAllow(!autoAllow); });
-    pop.appendChild(swRow);
+    acRow.addEventListener("click", (e) => { e.stopPropagation(); onToggleAutoContinue && onToggleAutoContinue(!autoContinue); });
+    pop.appendChild(acRow);
 
     // One expandable "Continue with" dropdown (like the controls above) whose
     // options are the OTHER agents; picking one hands this chat to that agent

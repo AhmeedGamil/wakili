@@ -13,7 +13,6 @@ export const KEYS = {
   sessionView: "ra-session-view",   // sidebar grouping: "project" | "all"
   sessionModel: "ra-session-model", // "1" = show each session's model in the list
   sideGroups: "ra-side-groups",     // collapsed sidebar project groups (JSON array of cwds)
-  hostOpen: "ra-host-open",         // "1" = the "From the host" section is expanded
   termHistory: "ra-term-history",   // terminal command history (JSON array)
   resumeSid: "ra-resume-sid",       // sessionStorage: chat to reopen after a reload
 };

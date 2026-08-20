@@ -23,8 +23,8 @@ export function createGuideSteps({ sidebar, picker, appearanceMenu }) {
       // the topbar) — the drawer closes so the topbar is visible.
       before: () => { document.body.classList.remove("nav-open"); picker.open(); },
       target: () => picker.el.querySelector(".switch-row"),
-      title: "Allow always",
-      body: "When this is on, the agent's permission requests (running commands, editing files) are approved automatically — smooth, hands-off runs. Turn it off to review and answer each request yourself.",
+      title: "Auto continue",
+      body: "On by default: when a turn runs into the usage limit, your computer picks the work back up on its own as soon as quota returns — no need to be watching. Turn it off for a chat you'd rather restart yourself.",
     },
     {
       before: () => { picker.close(); appearanceMenu.openTab("connection"); },

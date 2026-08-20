@@ -136,11 +136,16 @@ async function handleSend(id, args) {
 }
 
 // Ask the user multiple-choice question(s) and block until they answer on the phone.
+// The HTTP wait mirrors the gateway's QUESTION_WAIT_MS (same env, inherited
+// through the agent's spawn) plus headroom, so the gateway's timeout — not this
+// socket — is always the layer that decides.
+const ASK_WAIT_MS = Math.max(60_000, Number(process.env.WAKILI_QUESTION_TIMEOUT_MS) || 3_600_000) + 60_000;
+
 async function handleAsk(id, args) {
   try {
     const questions = Array.isArray(args.questions) ? args.questions : [];
     if (!questions.length) throw new Error("no questions provided");
-    const r = await postJson(GATEWAY + "/internal/question", JSON.stringify({ sessionId: SESSION, questions }), 310000);
+    const r = await postJson(GATEWAY + "/internal/question", JSON.stringify({ sessionId: SESSION, questions }), ASK_WAIT_MS);
     const answer = (r && r.answer) ? r.answer : "(the user did not answer)";
     send({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: "The user answered:\n" + answer }] } });
   } catch (e) {

@@ -41,8 +41,8 @@ export function createDock({ onPermission, onAnswerQuestion, onArchive, onActive
   }
 
   // ---- permissions ----
-  // "Allow always" never reaches here — the gateway approves those at the
-  // permission hook (no card is published), so it works with the app asleep.
+  // A request the gateway auto-approves never reaches here — it is answered at
+  // the permission hook and no card is published, so it works with the app asleep.
   function addPermission(req) {
     if (perms.some((r) => r.id === req.id)) return; // stream replay of a card already up
     perms.push(req);
