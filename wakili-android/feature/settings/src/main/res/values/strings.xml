@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="settings_title">Settings</string>
+    <string name="settings_appearance">Appearance</string>
+    <string name="settings_other">Other</string>
+    <string name="settings_formatting">Formatting</string>
+    <string name="settings_notifications">Notify when the agent needs me</string>
+    <string name="settings_floating_questions">Floating question alerts over other apps</string>
+    <string name="settings_manage_hosts">Add or change host</string>
+    <string name="settings_theme">Theme</string>
+    <string name="settings_accent">Accent color</string>
+    <string name="settings_theme_system">System</string>
+    <string name="settings_theme_dark">Dark</string>
+    <string name="settings_theme_light">Light</string>
+    <string name="settings_markdown">Format markdown</string>
+    <string name="settings_language">Language</string>
+    <string name="settings_device">Computer</string>
+    <string name="settings_lock">Lock screen</string>
+    <string name="settings_screen_off">Turn off screen</string>
+    <string name="settings_keep_awake">Keep awake</string>
+    <string name="settings_autostart">Start with computer</string>
+    <string name="settings_shutdown">Shut down computer</string>
+    <string name="settings_started">Started…</string>
+    <string name="settings_finished">Finished</string>
+    <string name="settings_shutting_down">Shutting down</string>
+    <string name="settings_status_failed">Failed</string>
+    <string name="settings_confirm_again">Tap again to confirm</string>
+    <string name="settings_connection">Connection</string>
+    <string name="settings_switch_failed">Couldn\'t reach that endpoint from this network.</string>
+</resources>

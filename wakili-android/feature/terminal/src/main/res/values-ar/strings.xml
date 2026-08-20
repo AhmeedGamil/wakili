@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="terminal_title">الطرفية</string>
+    <string name="terminal_hint">أمر ( / للسجل )</string>
+    <string name="terminal_prompt">❯</string>
+</resources>

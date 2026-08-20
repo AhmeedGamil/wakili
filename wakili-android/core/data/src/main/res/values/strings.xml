@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="data_reconnecting">Can\'t connect — retrying…</string>
+    <string name="data_stream_skew">Live updates aren\'t coming through — retrying…</string>
+    <string name="data_notify_channel">Agent activity</string>
+    <string name="data_notify_turn_end_title">Reply ready</string>
+    <string name="data_notify_turn_end_text">The agent finished its turn</string>
+    <string name="data_notify_permission_title">Permission needed</string>
+    <string name="data_notify_permission_text">The agent wants to use %1$s</string>
+    <string name="data_notify_attention_channel">Questions &amp; approvals</string>
+    <string name="data_notify_question_title">The agent has a question</string>
+    <string name="data_notify_question_text">Open to choose an answer</string>
+    <string name="data_copied_image">Image copied</string>
+    <string name="data_copied_link">Link copied</string>
+    <string name="data_copy_failed">Couldn\'t copy</string>
+</resources>

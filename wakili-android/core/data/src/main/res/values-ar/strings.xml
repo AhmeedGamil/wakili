@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="data_reconnecting">تعذّر الاتصال — تتم إعادة المحاولة…</string>
+    <string name="data_stream_skew">التحديثات المباشرة لا تصل — تتم إعادة المحاولة…</string>
+    <string name="data_notify_channel">نشاط الوكيل</string>
+    <string name="data_notify_turn_end_title">الرد جاهز</string>
+    <string name="data_notify_turn_end_text">أنهى الوكيل جولته</string>
+    <string name="data_notify_permission_title">مطلوب إذن</string>
+    <string name="data_notify_permission_text">يريد الوكيل استخدام %1$s</string>
+    <string name="data_notify_attention_channel">أسئلة وموافقات</string>
+    <string name="data_notify_question_title">لدى الوكيل سؤال</string>
+    <string name="data_notify_question_text">افتح لاختيار إجابة</string>
+    <string name="data_copied_image">تم نسخ الصورة</string>
+    <string name="data_copied_link">تم نسخ الرابط</string>
+    <string name="data_copy_failed">تعذّر النسخ</string>
+</resources>

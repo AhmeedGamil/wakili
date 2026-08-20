@@ -9,6 +9,7 @@
 
 # Build artifacts
 *.apk
+*.zip
 
 # Dependencies
 node_modules/
@@ -22,5 +23,6 @@ node_modules/
 code-review/
 SECURITY_REVIEW.md
 
-# Native Android client - kept locally, not part of the published repo
-wakili-android/
+# Device deploy tooling - points at this machine's tailnet nodes and local
+# project paths, so it stays here rather than in the published repo.
+scripts/

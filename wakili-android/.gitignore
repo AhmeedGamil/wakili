@@ -1,0 +1,20 @@
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+.kotlin/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Release signing — secrets stay on this machine (keystore.properties.example is the template).
+keystore.properties
+*.jks
+*.keystore
+
+# Scratch output from detached/background builds run outside the IDE.
+build-done.txt
+build-detached.cmd
+hs_err_pid*.log
+replay_pid*.log

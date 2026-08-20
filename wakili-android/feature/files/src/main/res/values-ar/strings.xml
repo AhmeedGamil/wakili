@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="files_title">الملفات</string>
+    <string name="files_images">الصور</string>
+    <string name="files_files">الملفات</string>
+    <string name="files_by_you">أرفقتها أنت</string>
+    <string name="files_by_agent">أرسلها الوكيل</string>
+    <string name="files_empty_images">لا توجد صور بعد.</string>
+    <string name="files_empty_files">لا توجد ملفات بعد.</string>
+    <string name="files_save">حفظ</string>
+    <string name="files_copy">نسخ</string>
+    <string name="files_delete">حذف</string>
+    <string name="files_cancel">إلغاء</string>
+    <string name="files_delete_title">حذف الملف؟</string>
+    <string name="files_delete_message">سيُزال \"%1$s\" من ملفاتك.</string>
+    <string name="files_deleting">جارٍ الحذف…</string>
+    <string name="files_deleted">تم حذف \"%1$s\"</string>
+    <string name="files_delete_failed">تعذّر الحذف — تحقق من الاتصال</string>
+</resources>

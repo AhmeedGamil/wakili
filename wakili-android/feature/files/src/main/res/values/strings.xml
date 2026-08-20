@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="files_title">Files</string>
+    <string name="files_images">Images</string>
+    <string name="files_files">Files</string>
+    <string name="files_filter_all">All</string>
+    <string name="files_by_you">By you</string>
+    <string name="files_by_agent">By agent</string>
+    <string name="files_empty_images">No images yet.</string>
+    <string name="files_empty_files">No files yet.</string>
+    <string name="files_save">Save</string>
+    <string name="files_copy">Copy</string>
+    <string name="files_delete">Delete</string>
+    <string name="files_cancel">Cancel</string>
+    <string name="files_delete_title">Delete file?</string>
+    <string name="files_delete_message">\"%1$s\" will be removed from your files.</string>
+    <string name="files_deleting">Deleting…</string>
+    <string name="files_deleted">Deleted \"%1$s\"</string>
+    <string name="files_delete_failed">Couldn\'t delete — check the connection</string>
+</resources>

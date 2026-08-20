@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="connect_title">Wakili</string>
+    <string name="connect_subtitle">شغّل البوابة على جهاز الكمبيوتر، ثم امسح رمز QR الظاهر.</string>
+    <string name="connect_pick_host">اختر مضيفًا واضغط اتصال، أو أضف مضيفًا جديدًا.</string>
+    <string name="connect_scan_qr">مسح رمز QR</string>
+    <string name="connect_scan_hint">وجّه الكاميرا نحو رمز QR الظاهر على الكمبيوتر</string>
+    <string name="connect_cancel">إلغاء</string>
+    <string name="connect_connecting">جارٍ الاتصال…</string>
+    <string name="connect_manual_hint">أو اكتب: http://192.168.1.10:8730/?t=…</string>
+    <string name="connect_go">اذهب</string>
+    <string name="connect_error_invalid">هذا لا يبدو رابط بوابة صحيحًا — يجب أن يتضمن رمز ?t=.</string>
+    <string name="connect_error_needs_token">لا يوجد رمز محفوظ لهذا الكمبيوتر — امسح رمز QR الخاص به مرة واحدة، أو الصق الرابط كاملًا متضمنًا ?t=.</string>
+    <string name="connect_error_unauthorized">رفضت البوابة الرمز. امسح رمز QR من الكمبيوتر مرة أخرى.</string>
+    <string name="connect_error_unreachable">تعذّر الوصول إلى الكمبيوتر. هل البوابة تعمل والهاتف على نفس الشبكة / VPN؟</string>
+    <string name="connect_current_host">المضيف الحالي</string>
+    <string name="connect_connect">اتصال</string>
+    <string name="connect_current_mark">الحالي</string>
+    <string name="connect_remove_confirm">متأكد؟</string>
+    <string name="connect_back">رجوع</string>
+</resources>
