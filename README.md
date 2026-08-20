@@ -57,6 +57,10 @@ approval mode.
 - **Sessions organized by project** — grouped by folder, rename/delete with a long-press,
   and every chat resumes exactly where it left off
 - **Queue messages while the agent is busy** — send now, delivered the moment the turn ends
+- **Schedule a task for later** — hand the gateway a message (and any attached files) to send
+  into a chat at a set time; it holds them and delivers even if the phone is asleep
+- **Auto-continue after a usage limit** — when a turn is cut short by the quota, the gateway
+  resumes it by itself once quota is back, so a long job still finishes overnight
 
 ---
 
@@ -95,9 +99,9 @@ npm install
    ```bash
    wakili
    ```
-3. **Open Wakili on your phone**, any of:
-   - **Android app** — [download the latest APK](https://github.com/ahmeedgamil/wakili/releases/latest/download/wakili.apk).
-   - **Build it yourself** — from [`wakili-react-native/`](wakili-react-native/).
+3. **Open Wakili on your phone**, either of:
+   - **Android app** — [download the latest APK](https://github.com/ahmeedgamil/wakili/releases/latest/download/wakili.apk),
+     or build it yourself from [`wakili-android/`](wakili-android/) (see [Clients](#clients)).
    - **Web (Android & iPhone)** — point the phone camera at the QR code printed in the
      terminal to open the app in the browser. On iPhone this is the way to use Wakili —
      and you can add it to the home screen for an app-like feel.
@@ -207,12 +211,43 @@ target only connects if the phone's current network can actually reach it.)
 
 ---
 
+## Clients
+
+The gateway serves one HTTP/SSE API; every client below talks to that same API, so
+sessions, projects and history are shared no matter which you open.
+
+| Client | Where | What it is |
+|--------|-------|------------|
+| **Web** | [`public/`](public/) | Served by the gateway itself. Works on any phone or desktop browser, installable as a PWA. **The only option on iPhone.** |
+| **Android (native)** | [`wakili-android/`](wakili-android/) | A Kotlin + Jetpack Compose app — the current Android client, and what the released APK is built from. Native chat rendering, notifications while backgrounded when a turn finishes or a permission request needs an answer, and a scheduled-tasks screen. |
+| **Android (WebView shell)** | [`wakili-react-native/`](wakili-react-native/) | The earlier Expo/React Native wrapper: a QR scanner plus a saved list of computers, showing the web UI full-screen. Superseded by the native app. |
+
+Both Android apps use the same application id (`com.ahmedgamil.wakili`), so only one can be
+installed at a time. Because they're signed with different keys, swapping one for the other
+means uninstalling first — which clears that app's data.
+
+Building the native app needs a JDK 17+ and the Android SDK:
+
+```bash
+cd wakili-android
+./gradlew assembleDebug      # or assembleRelease
+```
+
+Release builds are signed with your own key when `wakili-android/keystore.properties` exists
+(copy [`keystore.properties.example`](wakili-android/keystore.properties.example) and follow
+the `keytool` line inside it). Without that file the build falls back to the debug key, so a
+fresh clone still produces a sideloadable APK. The keystore and its passwords are git-ignored
+and never leave your machine.
+
+---
+
 ## How it works & where things live
 
 On first run a random access token is generated and saved to `~/.wakili/token.txt`; the
 URL carries it (`?t=…`) so opening the link "just works." Each chat is a JSON file under
-`~/.wakili/sessions/` (the project it runs in is saved as a `cwd` field inside it), and
-uploads live in `~/.wakili/uploads/` (override the base with `WAKILI_HOME`).
+`~/.wakili/sessions/` (the project it runs in is saved as a `cwd` field inside it), uploads
+live in `~/.wakili/uploads/`, and pending scheduled tasks in `~/.wakili/schedule.json`
+(override the base with `WAKILI_HOME`).
 
 The first launch also registers Wakili to **start with the computer** — meaning the gateway
 starts automatically when the computer turns on, running in the background even at the lock
