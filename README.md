@@ -39,13 +39,49 @@ approval mode.
 
 ## Features
 
+**Driving the agent**
+
+- **Pick the agent per message** — Claude Code, Claude (official Agent SDK) or Codex — and
+  its model, reasoning effort and approval mode, without leaving the chat
 - **Streaming output and tool/permission cards** — watch the agent work live and approve
   or deny its actions with a tap, or turn on per-chat auto-approval
 - **Hand a conversation off to another agent** mid-thread — the transcript travels with it
-- **File upload/download** — send photos and files to the agent with live progress, pull
-  results back to the phone
+- **Slash commands** in the composer — the active agent's real command list, including
+  your own from `~/.claude/commands` and the project's `.claude/commands`
 - **Built-in terminal** — multiple tabs, one per project, with recallable command history
 - **Browse and switch project folders** from the phone, including creating new ones
+
+**The agent reaching you**
+
+- **It asks, you tap** — the agent's questions arrive as multiple-choice cards that pause the
+  turn until you answer, with a free-text *Other* on every one, so a decision never needs typing
+- **It sends you files** — a built APK, a screenshot, a PDF: the agent pushes the file itself
+  rather than printing a path your phone can't open
+- **Notifications while you're outside the app** (Android app) — a turn finishing, a permission
+  waiting, or a question needing an answer; tap one to land straight in that chat. Anything the
+  agent is *blocked on* comes through on its own high-priority channel, so a question banners
+  over whatever you're doing instead of getting lost among finished-turn pings
+
+**Not losing work**
+
+- **Queue messages while the agent is busy** — send now, delivered the moment the turn ends
+- **Nothing sent is ever lost quietly** — every send is tracked from tap to server-accept with
+  its own *Sending… / Retry / Discard* row, kept in order per chat even across a session switch
+- **Schedule a task for later** — hand the gateway a message (and any attached files) to send
+  into a chat at a set time; it holds them and delivers even if the phone is asleep
+- **Auto-continue an interrupted turn** — see [below](#auto-continue)
+- **Sessions organized by project** — grouped by folder, rename/delete with a long-press,
+  and every chat resumes exactly where it left off
+
+**Files**
+
+- **File upload/download** — send photos and files to the agent with live progress, pull
+  results back to the phone
+- **A gallery of everything exchanged** — images and files in one place, newest first,
+  filterable by whether you or the agent sent them
+
+**The machine itself**
+
 - **Remote power controls** — lock the screen, blank the display, keep the machine awake,
   or shut the computer down
 - **Connection switcher** — hop in-app between LAN, Tailscale and Cloudflare without
@@ -53,14 +89,11 @@ approval mode.
 - **Starts with the computer** — after the first run the gateway is always up in the
   background; toggle it from the app
 - **Proxy support** for firewalled or blocked networks (`HTTPS_PROXY` in `.env`)
+
+**Getting around**
+
 - **Dark/light themes** with accent colors, and installable as a PWA
-- **Sessions organized by project** — grouped by folder, rename/delete with a long-press,
-  and every chat resumes exactly where it left off
-- **Queue messages while the agent is busy** — send now, delivered the moment the turn ends
-- **Schedule a task for later** — hand the gateway a message (and any attached files) to send
-  into a chat at a set time; it holds them and delivers even if the phone is asleep
-- **Auto-continue after a usage limit** — when a turn is cut short by the quota, the gateway
-  resumes it by itself once quota is back, so a long job still finishes overnight
+- **A guided tour** that spotlights the real controls one at a time, from Settings → Guidance
 
 ---
 
@@ -211,6 +244,32 @@ target only connects if the phone's current network can actually reach it.)
 
 ---
 
+## Auto-continue
+
+A turn that dies partway through is picked back up on its own — not just when you run out of
+quota, but whenever the cause is something that passes. The gateway reads the error that
+killed the turn and sorts it into one of three tiers:
+
+| The turn died to | Wakili | Retries |
+|------------------|--------|---------|
+| **Usage limit** — quota exhausted, `429`, "resets at…" | waits it out; recovery is certain, so patience is free | every 15 min for ~24h |
+| **Something passing** — dropped connection, timeout, `502`/`503`/`529`, an overloaded API, a flaky proxy, or the gateway itself crashing or restarting | retries on a short escalating ladder | 2 → 5 → 15 → 30 min, up to 6 tries |
+| **Something permanent** — expired auth, billing, a context overflow, a missing binary | stops immediately — retrying returns the same error forever | none |
+
+An error it can't confidently name gets the **short** ladder, never the 24-hour one. A turn
+that dies without producing anything at all (a killed process, a cut pipe) counts as passing,
+because treating it as a clean finish is what would cancel the very retry it needs.
+
+If the gateway restarts mid-turn, the interrupted turn is recovered on the next start and
+continues in about two minutes. Either way a line is written into the chat itself saying what
+happened and whether it will continue — so you find out by opening the chat, not by wondering.
+
+The resumed turn continues the agent's own thread, so it still knows what it was doing. It's a
+per-chat toggle, on by default; turn it off for a chat and the gateway leaves the turn alone
+and tells you so in the transcript.
+
+---
+
 ## Clients
 
 The gateway serves one HTTP/SSE API; every client below talks to that same API, so
@@ -223,8 +282,7 @@ sessions, projects and history are shared no matter which you open.
 | **Android (WebView shell)** | [`wakili-react-native/`](wakili-react-native/) | The earlier Expo/React Native wrapper: a QR scanner plus a saved list of computers, showing the web UI full-screen. Superseded by the native app. |
 
 Both Android apps use the same application id (`com.ahmedgamil.wakili`), so only one can be
-installed at a time. Because they're signed with different keys, swapping one for the other
-means uninstalling first — which clears that app's data.
+installed at a time — switching between them needs an uninstall first, which clears app data.
 
 Building the native app needs a JDK 17+ and the Android SDK:
 
