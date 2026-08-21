@@ -133,8 +133,10 @@ npm install
    wakili
    ```
 3. **Open Wakili on your phone**, either of:
-   - **Android app** — [download the latest APK](https://github.com/ahmeedgamil/wakili/releases/latest/download/wakili.apk),
-     or build it yourself from [`wakili-android/`](wakili-android/) (see [Clients](#clients)).
+   - **Android app (recommended)** — [download the latest APK](https://github.com/ahmeedgamil/wakili/releases/latest/download/wakili.apk),
+     or build it from [`wakili-android/`](wakili-android/). A native Kotlin/Compose app, not a
+     WebView: it adds notifications and a floating question card the browser can't do — see
+     [what the Kotlin app adds](#what-the-kotlin-app-adds).
    - **Web (Android & iPhone)** — point the phone camera at the QR code printed in the
      terminal to open the app in the browser. On iPhone this is the way to use Wakili —
      and you can add it to the home screen for an app-like feel.
@@ -278,11 +280,31 @@ sessions, projects and history are shared no matter which you open.
 | Client | Where | What it is |
 |--------|-------|------------|
 | **Web** | [`public/`](public/) | Served by the gateway itself. Works on any phone or desktop browser, installable as a PWA. **The only option on iPhone.** |
-| **Android (native)** | [`wakili-android/`](wakili-android/) | A Kotlin + Jetpack Compose app — the current Android client, and what the released APK is built from. Native chat rendering, notifications while backgrounded when a turn finishes or a permission request needs an answer, and a scheduled-tasks screen. |
+| **Android (native)** | [`wakili-android/`](wakili-android/) | **The recommended Android client** — Kotlin + Jetpack Compose, and what the released APK is built from. Everything the web client does, plus the extras below. |
 | **Android (WebView shell)** | [`wakili-react-native/`](wakili-react-native/) | The earlier Expo/React Native wrapper: a QR scanner plus a saved list of computers, showing the web UI full-screen. Superseded by the native app. |
 
+### What the Kotlin app adds
+
+On Android, prefer the native app. It's a full rewrite rather than a wrapper, so it can do
+things a browser tab simply isn't allowed to:
+
+- **Notifications** — a turn finishing, a permission waiting, or a question needing an answer,
+  while the app is backgrounded. The web client has none: a browser can't wake you.
+- **A floating question card** — when the agent asks something, a card is drawn *over whatever
+  app you're in* (chat-heads style) and stays until you answer. A heads-up notification retreats
+  after a few seconds, and a question the agent is blocked on used to wait out its whole window
+  unseen. Off by default; needs Android's "display over other apps" grant.
+- **Real downloads** — files go through the system download manager, not a WebView shim.
+- **Copy an image as actual pixels** to the system clipboard, so it pastes into any other app.
+- **Native rendering** — the chat list, markdown and streaming text are Compose, so long
+  transcripts scroll without the jank a WebView hits.
+
+The web client remains the only option on iPhone, and is still the fastest way to try Wakili
+on any device — nothing to install.
+
 Both Android apps use the same application id (`com.ahmedgamil.wakili`), so only one can be
-installed at a time — switching between them needs an uninstall first, which clears app data.
+installed at a time. They're signed with different keys, so swapping one for the other means
+uninstalling first — which clears that app's data.
 
 Building the native app needs a JDK 17+ and the Android SDK:
 
