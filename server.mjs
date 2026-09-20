@@ -12,6 +12,7 @@ import os from "node:os";
 import crypto from "node:crypto";
 import { spawn, exec } from "node:child_process";
 import zlib from "node:zlib";
+import stream from "node:stream/promises";
 
 import { config, ROOT } from "./src/config.mjs";
 import { tailscaleUrl, startCloudflare } from "./src/tunnel.mjs";
@@ -310,6 +311,12 @@ function strEq(x, y) {
   const a = Buffer.from(String(x ?? "")), b = Buffer.from(String(y ?? ""));
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
+// Names ride in a header on raw uploads, and header values are ASCII-only —
+// clients percent-encode them (names are routinely Arabic, spaced, or emoji).
+function decodeName(header) {
+  const v = String(header || "");
+  try { return decodeURIComponent(v); } catch { return v; }
+}
 async function readBody(req) {
   let b = "";
   for await (const c of req) b += c;
@@ -363,6 +370,13 @@ function createTurnIO(session, claim, clientMessageId, { adopted = false } = {})
           if (part) { part.output = output; part.isError = isError; touchTurn(session.id); }
           publish(session.id, { type: "_gateway", subtype: "tool_result", id: b.tool_use_id, output, isError });
         }
+      } else if (evt.type === "system" && evt.subtype === "init" && evt.session_id) {
+        // The thread id is announced up front in the init event, not only in
+        // `result`. Capture it here too: an interrupted/killed turn never gets
+        // a `result`, and a fresh chat whose first turn was stopped would
+        // otherwise keep resumeId=null — the next message then starts a blank
+        // thread and the agent "forgets" the whole conversation.
+        session.resumeId = evt.session_id;
       } else if (evt.type === "result") {
         if (evt.session_id) session.resumeId = evt.session_id;
         resultInfo = {
@@ -1110,18 +1124,40 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, stopped: !!child });
     }
 
-    // phone uploads a file (base64) -> saved to disk; path goes to the agent
+    // A client uploads a file -> saved to disk; the path goes to the agent.
+    //
+    // TWO body shapes, same route. What every client uses now is RAW BYTES: the
+    // file IS the body, its name rides in a header, and the stream goes straight
+    // to disk — nothing holds the whole file in memory on either side. The JSON
+    // shape ({ name, dataBase64 }) stays for anything still speaking it, but it
+    // costs ~2.6x the file's size in RAM here (base64 string + parse), and about
+    // four times that on the client that had to build it — which is what made a
+    // 40MB pick kill the Android app.
     if (p === "/api/upload" && m === "POST") {
-      const b = await readBody(req);
-      if (!b.name || !b.dataBase64) return json(res, 400, { error: "bad upload" });
+      const raw = !String(req.headers["content-type"] || "").startsWith("application/json");
+      const b = raw ? null : await readBody(req);
+      const name = raw ? decodeName(req.headers["x-file-name"]) : b.name;
+      if (!name || (!raw && !b.dataBase64)) return json(res, 400, { error: "bad upload" });
       await fsp.mkdir(config.uploadsDir, { recursive: true });
-      const safe = path.basename(b.name).replace(/[^\w.\- ]/g, "_");
+      const safe = path.basename(name).replace(/[^\w.\- ]/g, "_");
       const dest = path.join(config.uploadsDir, `${crypto.randomUUID()}-${safe}`);
-      await fsp.writeFile(dest, Buffer.from(b.dataBase64, "base64"));
+      if (raw) {
+        try {
+          await stream.pipeline(req, fsSync.createWriteStream(dest));
+        } catch {
+          // A cancelled or broken transfer leaves a partial file behind: drop
+          // it, so a half-written attachment can never reach an agent.
+          await fsp.unlink(dest).catch(() => {});
+          return json(res, 400, { error: "upload failed" });
+        }
+      } else {
+        await fsp.writeFile(dest, Buffer.from(b.dataBase64, "base64"));
+      }
       // Register right away so the phone gets a capability URL for displaying the
       // attachment in the chat (image thumbnails / download links) and the sidebar
       // lists it. runTurn skips re-recording attachments that carry a url.
-      const token = recordFile({ sessionId: b.sessionId || "", source: "user", filePath: dest, name: safe });
+      const sessionId = raw ? String(req.headers["x-session-id"] || "") : (b.sessionId || "");
+      const token = recordFile({ sessionId, source: "user", filePath: dest, name: safe });
       return json(res, 200, { path: dest, name: safe, url: `/api/files/${token}` });
     }
 

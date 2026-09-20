@@ -87,13 +87,6 @@ data class TermBody(
 )
 
 @Serializable
-data class UploadBody(
-    val name: String,
-    val dataBase64: String,
-    val sessionId: String? = null,
-)
-
-@Serializable
 data class DeleteUploadBody(
     val path: String,
 )

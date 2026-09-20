@@ -82,6 +82,7 @@ class SettingsViewModel @Inject constructor(
     fun setTheme(mode: ThemeMode) = viewModelScope.launch { settingsStore.setTheme(mode) }
     fun setAccent(hex: String) = viewModelScope.launch { settingsStore.setAccent(hex) }
     fun setMarkdown(on: Boolean) = viewModelScope.launch { settingsStore.setMarkdown(on) }
+    fun setChatFontSize(sp: Int) = viewModelScope.launch { settingsStore.setChatFontSize(sp) }
     fun setNotifications(on: Boolean) = viewModelScope.launch { settingsStore.setNotifications(on) }
     fun setFloatingQuestions(on: Boolean) = viewModelScope.launch { settingsStore.setFloatingQuestions(on) }
 

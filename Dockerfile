@@ -11,6 +11,17 @@ RUN apt-get update \
 # Bake the agent CLIs into the image so `claude` and `codex` are always on PATH.
 RUN npm install -g @anthropic-ai/claude-code @openai/codex
 
+# Antigravity CLI (agy): one glibc binary from the GitHub release, picked by
+# the image's architecture. Optional agent — it needs a Google sign-in before
+# its turns work (see ANTIGRAVITY_OAUTH_TOKEN in docker-entrypoint.sh).
+RUN arch="$(dpkg --print-architecture)" \
+    && case "$arch" in amd64) agy=x64 ;; arm64) agy=arm64 ;; *) agy="" ;; esac \
+    && if [ -n "$agy" ]; then \
+         curl -fsSL "https://github.com/google-antigravity/antigravity-cli/releases/latest/download/agy_cli_linux_${agy}.tar.gz" \
+           | tar -xz -C /usr/local/bin antigravity \
+         && chmod +x /usr/local/bin/antigravity; \
+       fi
+
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev

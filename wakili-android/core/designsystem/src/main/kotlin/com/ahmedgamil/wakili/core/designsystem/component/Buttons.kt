@@ -23,6 +23,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.Dp
 import com.ahmedgamil.wakili.core.designsystem.icon.WakiliIcon
+import com.ahmedgamil.wakili.core.designsystem.icon.WakiliIcons
 import com.ahmedgamil.wakili.core.designsystem.theme.WakiliDimens
 import com.ahmedgamil.wakili.core.designsystem.theme.WakiliTheme
 
@@ -117,6 +118,27 @@ fun WakiliRoundIconButton(
     ) {
         WakiliIcon(icon, size = iconSize, tint = colors.text, contentDescription = contentDescription)
     }
+}
+
+/**
+ * Every page's back affordance (Files, Settings, Terminal, Scheduled tasks, the
+ * chat topbar). Same round button as everywhere else, but the chevron is sized
+ * up from the default 18dp: it is the one glyph you aim at without looking, and
+ * at body-icon size it reads as a hairline inside the 42dp circle.
+ */
+@Composable
+fun WakiliBackButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    contentDescription: String? = null,
+) {
+    WakiliRoundIconButton(
+        icon = WakiliIcons.ChevronLeft,
+        onClick = onClick,
+        modifier = modifier,
+        iconSize = WakiliDimens.IconXl,
+        contentDescription = contentDescription,
+    )
 }
 
 /** A borderless tap target for a single icon (the web's ghost icon buttons). */

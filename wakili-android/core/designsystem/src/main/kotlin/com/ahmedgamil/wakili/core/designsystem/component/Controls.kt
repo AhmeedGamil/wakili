@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.TextFieldDecorator
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
@@ -182,6 +183,7 @@ fun WakiliTextField(
         horizontal = WakiliDimens.Space11,
         vertical = WakiliDimens.Space9,
     ),
+    keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
 ) {
     val colors = WakiliTheme.colors
     val interaction = remember { MutableInteractionSource() }
@@ -195,6 +197,7 @@ fun WakiliTextField(
         singleLine = singleLine,
         maxLines = maxLines,
         textStyle = textStyle.copy(color = colors.text),
+        keyboardOptions = keyboardOptions,
         cursorBrush = SolidColor(colors.accent),
         interactionSource = interaction,
         decorationBox = { inner ->

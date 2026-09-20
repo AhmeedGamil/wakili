@@ -354,7 +354,12 @@ function confirmDelete(name, onYes) {
 export function attachMediaMenu(node, opts) {
   let hold = 0, held = false;
   const open = (x, y) => {
+    // `held` marks THIS finger's gesture as a long press whether or not it gets
+    // the menu, so lifting it can never also count as a tap on the card.
     held = true;
+    // First hold wins: a second thumb landing in the same moment leaves the
+    // menu where it is instead of moving it to its own card.
+    if (ctx && !ctx.hidden) return;
     // The card's own <img> (when present and loaded) is the pixel source for
     // Copy — no re-download of something already on screen.
     const items = [
@@ -367,8 +372,13 @@ export function attachMediaMenu(node, opts) {
     if (opts.onDelete) items.push(ctxItem("trash", "Delete", "ctx-danger", () => confirmDelete(opts.name || "file", opts.onDelete)));
     openCtx(x, y, items);
   };
+  // Two thumbs held at once still end up with ONE menu: every card opens the
+  // same single popover element, and open() bows out when it is already
+  // showing. Nothing coordinates the timers — the shared popover is the lock.
   const arm = (x, y) => { held = false; clearTimeout(hold); hold = setTimeout(() => open(x, y), 500); };
-  node.addEventListener("touchstart", (e) => { const t = e.touches[0]; arm(t.clientX, t.clientY); }, { passive: true });
+  // changedTouches, not touches[0]: with a second finger down, touches[0] is
+  // still the FIRST finger, which would anchor the menu to the wrong card.
+  node.addEventListener("touchstart", (e) => { const t = e.changedTouches[0]; arm(t.clientX, t.clientY); }, { passive: true });
   node.addEventListener("touchmove", () => clearTimeout(hold), { passive: true });
   node.addEventListener("touchcancel", () => clearTimeout(hold), { passive: true });
   // preventDefault stops the synthetic click that would otherwise also open

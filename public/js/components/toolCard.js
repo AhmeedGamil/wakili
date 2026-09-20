@@ -44,13 +44,18 @@ export function diffBody(name, input) {
 // for Read). Bash has no path, so it shows its description instead (or just
 // "Bash" when there's none). The title wraps so a long path shows in full.
 // Claude's WebSearch/WebFetch and codex's web_search item all count as web.
-const isWebTool = (name) => /^web_?(search|fetch)/i.test(name);
+// Antigravity's search_web/read_url_content join them.
+const isWebTool = (name) => /^web_?(search|fetch)|^(search_web|read_url_content)$/i.test(name);
+// Antigravity's file tools, by family — they keep their own names (the agent
+// reports no contents/diffs, so they can't pose as Read/Edit), but share the icons.
+const AGY_EDIT_TOOLS = new Set(["write_to_file", "replace_file_content", "multi_replace_file_content", "sed_file"]);
+const PATTERN_TOOLS = new Set(["Grep", "grep_search", "find_by_name"]);
 function headIcon(name) {
   if (name === "Bash" || name === "PowerShell") return "terminal";
-  if (EDIT_TOOLS.has(name)) return "pencil";
-  if (name === "Read") return "file-text";
-  if (name === "Grep") return "search";
-  if (name === "Glob") return "folder";
+  if (EDIT_TOOLS.has(name) || AGY_EDIT_TOOLS.has(name)) return "pencil";
+  if (name === "Read" || name === "view_file") return "file-text";
+  if (name === "Grep" || name === "grep_search") return "search";
+  if (name === "Glob" || name === "find_by_name" || name === "list_dir") return "folder";
   if (name === "Task" || name === "Agent") return "bot";
   if (isWebTool(name)) return "globe";
   return "wrench";
@@ -62,7 +67,7 @@ function headLabel(name, input) {
     return d ? "Bash · " + d : "Bash";
   }
   // Grep/Glob are about the pattern, not a single file — surface it in the header.
-  if (name === "Grep" && obj && obj.pattern) return 'Grep "' + obj.pattern + '"' + (obj.path ? " (in " + obj.path + ")" : "");
+  if (PATTERN_TOOLS.has(name) && obj && obj.pattern) return name + ' "' + obj.pattern + '"' + (obj.path ? " (in " + obj.path + ")" : "");
   if (name === "Glob" && obj && obj.pattern) return 'Glob pattern: "' + obj.pattern + '"';
   const f = fileOf(input);
   if (f) return name + " · " + f + lineRange(name, input);

@@ -41,8 +41,9 @@ approval mode.
 
 **Driving the agent**
 
-- **Pick the agent per message** — Claude Code, Claude (official Agent SDK) or Codex — and
-  its model, reasoning effort and approval mode, without leaving the chat
+- **Pick the agent per message** — Claude Code, Claude (official Agent SDK), Codex or
+  Google's Antigravity (shown when its CLI is installed) — and its model, reasoning effort
+  and approval mode, without leaving the chat
 - **Streaming output and tool/permission cards** — watch the agent work live and approve
   or deny its actions with a tap, or turn on per-chat auto-approval
 - **Hand a conversation off to another agent** mid-thread — the transcript travels with it
@@ -101,6 +102,10 @@ approval mode.
 
 - **Node.js 20+**
 - **Claude Code or Codex installed** — on your `PATH` and authenticated (per that tool's own docs).
+- **Optional: the Antigravity CLI** — installed to `~/.antigravity/bin` and signed in; the
+  Antigravity agent tab appears on its own once the gateway finds it (`WAKILI_AGY_BIN`
+  points at a binary elsewhere). Wakili adds its two phone tools to Antigravity's user-level
+  `~/.gemini/config/mcp_config.json` and pre-allows them in its `settings.json`.
 - **Outside the LAN:** Tailscale or cloudflared.
 
 ---

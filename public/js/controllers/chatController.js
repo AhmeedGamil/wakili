@@ -774,10 +774,15 @@ export function createChatController({ api, store, emitter }) {
     // discovers its socket died. Give queued events a beat to drain, then: a
     // stale stream reopens as a reconnect (full repair); a healthy one just
     // revalidates the active session's cache (~60 bytes when unchanged).
+    // The files registry is refreshed either way: it only ever updates from
+    // live `file`/`turnEnd` events, so a stream that died while backgrounded
+    // left it frozen at the last snapshot — with no poll to repair it, the
+    // Files page kept showing a stale gallery until a full reload.
     const nudge = () => setTimeout(() => {
       if (!es) return;
       if (Date.now() - lastEventAt > 20000) openStream(true);
       else { const id = store.get().activeId; if (id) sessionCache.refresh(id); }
+      refreshFiles();
     }, 1000);
     document.addEventListener("visibilitychange", () => { if (!document.hidden) nudge(); });
     window.addEventListener("online", nudge);
@@ -815,7 +820,7 @@ export function createChatController({ api, store, emitter }) {
     scheduleTask, loadScheduled, cancelScheduled, setAgent,
     loadAllScheduled, createScheduled, updateScheduled, cancelScheduledAnywhere,
     pickModel, answerPermission, answerQuestion, browseFolders, createFolder,
-    setCwd, removeUpload, refreshProjects, forgetProject,
+    setCwd, removeUpload, refreshFiles, refreshProjects, forgetProject,
     // Device controls (Settings → Device rows render through these).
     refreshDevice: device.refreshDevice,
     lockScreen: device.lockScreen, screenOff: device.screenOff,

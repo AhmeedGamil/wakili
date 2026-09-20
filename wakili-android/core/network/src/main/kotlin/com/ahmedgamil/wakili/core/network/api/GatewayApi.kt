@@ -36,6 +36,7 @@ import retrofit2.Response
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
+import retrofit2.http.Header
 import retrofit2.http.PATCH
 import retrofit2.http.POST
 import retrofit2.http.Path
@@ -141,8 +142,17 @@ interface GatewayApi {
     @DELETE("api/files/{token}")
     suspend fun deleteFile(@Path("token") token: String): OkDto
 
+    /**
+     * Raw-bytes upload: the file IS the body, so neither the phone nor the
+     * gateway ever holds it in memory. The name is percent-encoded (header
+     * values are ASCII-only) and the gateway decodes it.
+     */
     @POST("api/upload")
-    suspend fun upload(@Body body: RequestBody): UploadResultDto
+    suspend fun upload(
+        @Header("X-File-Name") name: String,
+        @Header("X-Session-Id") sessionId: String,
+        @Body body: RequestBody,
+    ): UploadResultDto
 
     @POST("api/upload/delete")
     suspend fun deleteUpload(@Body body: DeleteUploadBody): OkDto

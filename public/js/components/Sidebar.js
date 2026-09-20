@@ -1,10 +1,9 @@
 // Sidebar — on phones this is the HOME PAGE (the app opens here, full-width;
 // opening a chat slides it away). A floating brand (logo + name) over one
-// scrolling column — the agent tabs (Claude / Codex…) that pick which agent
-// new chats use AND filter the session list, the "New chat" split button
-// (tap = last project, folder half = pick a project), the Files row, then a
-// "Sessions" header with a filter menu and the session list; Settings sits
-// alone in a pinned footer under the scroll. Pulling the
+// scrolling column — the agent dropdown that picks which agent new chats use
+// AND filters the session list, then a "Sessions" header with a filter menu and
+// the session list. The solid theme-colored "New chat" button floats over the
+// bottom fade. Pulling the
 // column down from the top reveals a refresh chip under the brand
 // (pull-to-refresh). The session list renders one of two ways, picked in the
 // filter popover and remembered in localStorage:
@@ -23,30 +22,33 @@ import { KEYS, getPref, setPref, getJSON, setJSON, putSession } from "../core/pr
 export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDelete, onRename, onOpenFiles, onOpenSchedule, onAppearance, onOpenConnect, onRetrySessions }) {
   let view = getPref(KEYS.sessionView) === "all" ? "all" : "project";
   let showModel = getPref(KEYS.sessionModel) === "1";
-  let tabAgent = getPref(KEYS.homeAgent) || "claude"; // the selected agent tab — new chats use it, the list filters by it
+  let tabAgent = getPref(KEYS.homeAgent) || "claude"; // the selected agent — new chats use it, the list filters by it
   let last = { sessions: [], activeId: null, busyIds: {}, unreadIds: {}, agents: [], projects: [], sessionsState: "loading" }; // cached for re-render on toggle
 
-  // Agent tabs: the agent is chosen HERE, on the home page — the chat page
-  // never shows an agent picker. Segmented buttons from the agents manifest;
-  // the choice persists and also filters the session list below.
-  const tabs = el("div", { class: "agent-tabs" });
-  tabs.hidden = true;
-  function renderTabs() {
+  // Agent dropdown: the agent is chosen HERE, on the home page — the chat page
+  // never shows an agent picker. The choice persists and filters the list.
+  const agentSelect = el("select", { "aria-label": "Agent" });
+  agentSelect.addEventListener("change", () => {
+    if (agentSelect.value === tabAgent) return;
+    tabAgent = agentSelect.value;
+    setPref(KEYS.homeAgent, tabAgent);
+    renderSessions();
+  });
+  const agentPicker = el("label", { class: "agent-picker" }, icon("bot"), agentSelect);
+  agentPicker.hidden = true;
+  function renderAgentPicker() {
     const agents = last.agents;
-    tabs.hidden = agents.length < 2;
-    if (tabs.hidden) return;
-    if (!agents.some((a) => a.id === tabAgent)) tabAgent = agents[0].id;
-    tabs.innerHTML = "";
-    for (const a of agents) {
-      tabs.appendChild(el("button", {
-        class: a.id === tabAgent ? "on" : "", type: "button", text: a.label,
-        onClick: () => {
-          if (a.id === tabAgent) return;
-          tabAgent = a.id; setPref(KEYS.homeAgent, tabAgent);
-          renderTabs(); renderSessions();
-        },
-      }));
+    agentPicker.hidden = agents.length < 2;
+    if (!agents.length) return;
+    if (!agents.some((a) => a.id === tabAgent)) {
+      tabAgent = agents[0].id;
+      setPref(KEYS.homeAgent, tabAgent);
     }
+    agentSelect.innerHTML = "";
+    for (const a of agents) {
+      agentSelect.appendChild(el("option", { value: a.id, text: a.label }));
+    }
+    agentSelect.value = tabAgent;
   }
 
 
@@ -202,7 +204,8 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
 
   // Everything below the brand scrolls as one column; the brand floats over it
   // (absolute, with a fade — see .side-brand) so content slides out under it.
-  const scroll = el("div", { class: "side-scroll" }, tabs, newBtn, el("div", { class: "side-sep" }), sessHead, list);
+  const scroll = el("div", { class: "side-scroll" }, agentPicker, sessHead, list);
+  const bottomFade = el("div", { class: "side-bottom-fade", "aria-hidden": "true" });
 
   // Pull-to-refresh (replaces the old refresh button): dragging the
   // scrolled-to-top sidebar down slides a spinner chip out from under the
@@ -241,6 +244,8 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
     brand,
     pull,
     scroll,
+    bottomFade,
+    newBtn,
   );
 
   function setView(v) {
@@ -259,7 +264,7 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
     last = { sessions: sessions || [], activeId, busyIds, unreadIds, agents: agents || [], projects: projects || [], sessionsState };
     brandFilesCount.textContent = String(files.length);
     hostDot.classList.toggle("off", !connected);
-    renderTabs();
+    renderAgentPicker();
     renderToggle();
     renderSessions();
   }
@@ -299,8 +304,19 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
     const row = el("div",
       { class: "session" + (s.id === activeId ? " active" : ""), onClick: () => { if (held) { held = false; return; } onSelect(s.id); } },
       deletingSpinner, main, model, flag);
-    const armHold = (x, y) => { held = false; clearTimeout(holdTimer); holdTimer = setTimeout(() => { held = true; openCtx(s, x, y); }, 500); };
-    row.addEventListener("touchstart", (e) => { const t = e.touches[0]; armHold(t.clientX, t.clientY); }, { passive: true });
+    // Two rows held at once still end up with ONE menu: every row opens the
+    // same single .sess-ctx popover, and the first hold to fire keeps it. A
+    // later one still marks its own finger as held — lifting it must not count
+    // as a tap that opens the chat — but leaves the menu alone. The shared
+    // popover is the lock; nothing coordinates the timers.
+    const armHold = (x, y) => {
+      held = false;
+      clearTimeout(holdTimer);
+      holdTimer = setTimeout(() => { held = true; if (ctx.hidden) openCtx(s, x, y); }, 500);
+    };
+    // changedTouches, not touches[0]: with a second finger down, touches[0] is
+    // still the FIRST finger, which would anchor the menu to the wrong row.
+    row.addEventListener("touchstart", (e) => { const t = e.changedTouches[0]; armHold(t.clientX, t.clientY); }, { passive: true });
     row.addEventListener("touchmove", () => clearTimeout(holdTimer), { passive: true });
     row.addEventListener("touchcancel", () => clearTimeout(holdTimer), { passive: true });
     // preventDefault on touchend stops the browser's synthetic click — without
@@ -316,7 +332,7 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
     const { activeId, busyIds, unreadIds, sessionsState } = last;
     // Only the selected agent's chats — the tab is the top of the hierarchy.
     // Sessions from before agents were recorded count as Claude's.
-    const sessions = tabs.hidden ? last.sessions
+    const sessions = agentPicker.hidden ? last.sessions
       : last.sessions.filter((s) => (s.agentId || "claude") === tabAgent);
     list.innerHTML = "";
     // Before the first successful list load there are no rows to show — say
@@ -360,7 +376,7 @@ export function createSidebar({ onNew, onNewLast, onNewInFolder, onSelect, onDel
     //
     // Groups come from the gateway's project registry FIRST, not from the
     // sessions on screen: a project belongs to the workspace, not to an agent,
-    // so every agent tab lists every project — including ones this agent has no
+    // so every agent selection lists every project — including ones this agent has no
     // chats in yet, and folders just created that have no chats at all. Sessions
     // are then bucketed into those groups; any cwd not in the registry (an older
     // session, or a folder since forgotten) still gets a group of its own so no

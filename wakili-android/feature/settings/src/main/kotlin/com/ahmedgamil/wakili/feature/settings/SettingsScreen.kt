@@ -18,7 +18,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -36,20 +38,27 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.ahmedgamil.wakili.core.datastore.CHAT_FONT_MAX
+import com.ahmedgamil.wakili.core.datastore.CHAT_FONT_MIN
 import com.ahmedgamil.wakili.core.datastore.ThemeMode
 import com.ahmedgamil.wakili.core.designsystem.component.SectionLabel
 import com.ahmedgamil.wakili.core.designsystem.component.SegmentedTab
-import com.ahmedgamil.wakili.core.designsystem.component.WakiliRoundIconButton
+import com.ahmedgamil.wakili.core.designsystem.component.WakiliGhostIconButton
+import com.ahmedgamil.wakili.core.designsystem.component.WakiliBackButton
 import com.ahmedgamil.wakili.core.designsystem.component.WakiliSegmentedTabs
 import com.ahmedgamil.wakili.core.designsystem.component.WakiliSwitchRow
 import com.ahmedgamil.wakili.core.designsystem.component.WakiliSwitchRowStyle
+import com.ahmedgamil.wakili.core.designsystem.component.WakiliTextField
 import com.ahmedgamil.wakili.core.designsystem.icon.WakiliIcon
 import com.ahmedgamil.wakili.core.designsystem.icon.WakiliIcons
 import com.ahmedgamil.wakili.core.designsystem.theme.AccentPalette
@@ -86,7 +95,7 @@ fun SettingsScreen(
             horizontalArrangement = Arrangement.spacedBy(WakiliDimens.Space10),
             modifier = Modifier.padding(horizontal = WakiliDimens.Space12, vertical = WakiliDimens.Space10),
         ) {
-            WakiliRoundIconButton(icon = WakiliIcons.CornerUpLeft, onClick = onBack)
+            WakiliBackButton(onClick = onBack)
             Text(
                 text = stringResource(R.string.settings_title),
                 style = MaterialTheme.typography.titleMedium,
@@ -140,6 +149,7 @@ private fun OtherTab(uiState: SettingsUiState, viewModel: SettingsViewModel) {
         textStyle = ChromeRowTextStyle,
         modifier = Modifier.padding(horizontal = WakiliDimens.Space8),
     )
+    ChatFontSizeRow(size = uiState.settings.chatFontSize, onChange = viewModel::setChatFontSize)
     // Background notifications — enabling asks for POST_NOTIFICATIONS on 13+.
     val notifPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -267,6 +277,63 @@ private fun OtherTab(uiState: SettingsUiState, viewModel: SettingsViewModel) {
  * "Device" tab — the web DeviceMenu, row for row: lock / screen-off, the
  * keep-awake and start-with-computer toggles, then the two-tap shutdown last.
  */
+/**
+ * Chat font size as a NUMBER (sp of the transcript's body text): type it, or
+ * nudge it with − / +. A typed value applies the moment it is in range, so a
+ * half-typed "2" on the way to "20" never snaps the chat to the minimum; an
+ * abandoned one reverts when the field loses focus.
+ */
+@Composable
+private fun ChatFontSizeRow(size: Int, onChange: (Int) -> Unit) {
+    val colors = WakiliTheme.colors
+    var text by remember(size) { mutableStateOf(size.toString()) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = WakiliDimens.Space8)
+            .padding(horizontal = WakiliDimens.Space10, vertical = WakiliDimens.Space4),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(WakiliDimens.Space11),
+    ) {
+        WakiliIcon(WakiliIcons.Type, tint = colors.text)
+        Text(
+            text = stringResource(R.string.settings_chat_font_size),
+            style = ChromeRowTextStyle,
+            color = colors.text,
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            WakiliGhostIconButton(
+                icon = WakiliIcons.Minus,
+                onClick = { onChange(size - 1) },
+                enabled = size > CHAT_FONT_MIN,
+                contentDescription = stringResource(R.string.settings_font_smaller),
+            )
+            WakiliTextField(
+                value = text,
+                onValueChange = { raw ->
+                    text = raw.filter(Char::isDigit).take(2)
+                    text.toIntOrNull()?.takeIf { it in CHAT_FONT_MIN..CHAT_FONT_MAX }?.let(onChange)
+                },
+                singleLine = true,
+                textStyle = ChromeRowTextStyle.copy(textAlign = TextAlign.Center),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier
+                    .width(WakiliDimens.Space48)
+                    .onFocusChanged { if (!it.isFocused) text = size.toString() },
+            )
+            WakiliGhostIconButton(
+                icon = WakiliIcons.Plus,
+                onClick = { onChange(size + 1) },
+                enabled = size < CHAT_FONT_MAX,
+                contentDescription = stringResource(R.string.settings_font_larger),
+            )
+        }
+    }
+}
+
 @Composable
 private fun DeviceTab(uiState: SettingsUiState, viewModel: SettingsViewModel) {
     DeviceActionRow(

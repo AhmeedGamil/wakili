@@ -13,6 +13,9 @@
     <string name="settings_theme_dark">Dark</string>
     <string name="settings_theme_light">Light</string>
     <string name="settings_markdown">Format markdown</string>
+    <string name="settings_chat_font_size">Chat font size</string>
+    <string name="settings_font_smaller">Smaller text</string>
+    <string name="settings_font_larger">Larger text</string>
     <string name="settings_language">Language</string>
     <string name="settings_device">Computer</string>
     <string name="settings_lock">Lock screen</string>

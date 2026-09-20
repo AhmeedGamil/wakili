@@ -45,7 +45,7 @@ import com.ahmedgamil.wakili.core.designsystem.component.SegmentedTab
 import com.ahmedgamil.wakili.core.designsystem.component.WakiliContextMenu
 import com.ahmedgamil.wakili.core.designsystem.component.WakiliDangerSpinner
 import com.ahmedgamil.wakili.core.designsystem.component.WakiliMenuItem
-import com.ahmedgamil.wakili.core.designsystem.component.WakiliRoundIconButton
+import com.ahmedgamil.wakili.core.designsystem.component.WakiliBackButton
 import com.ahmedgamil.wakili.core.designsystem.component.WakiliSegmentedTabs
 import com.ahmedgamil.wakili.core.designsystem.component.wakiliShimmer
 import com.ahmedgamil.wakili.core.designsystem.icon.WakiliIcon
@@ -86,7 +86,7 @@ fun FilesScreen(
             horizontalArrangement = Arrangement.spacedBy(WakiliDimens.Space10),
             modifier = Modifier.padding(horizontal = WakiliDimens.Space12, vertical = WakiliDimens.Space10),
         ) {
-            WakiliRoundIconButton(icon = WakiliIcons.CornerUpLeft, onClick = onBack)
+            WakiliBackButton(onClick = onBack)
             Text(
                 text = stringResource(R.string.files_title),
                 style = MaterialTheme.typography.titleMedium,

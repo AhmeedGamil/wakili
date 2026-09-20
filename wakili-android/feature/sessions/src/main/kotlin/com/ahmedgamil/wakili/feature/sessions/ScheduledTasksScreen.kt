@@ -47,6 +47,7 @@ import com.ahmedgamil.wakili.core.designsystem.component.WakiliButton
 import com.ahmedgamil.wakili.core.designsystem.component.WakiliButtonStyle
 import com.ahmedgamil.wakili.core.designsystem.component.WakiliGhostIconButton
 import com.ahmedgamil.wakili.core.designsystem.component.WakiliMenuItem
+import com.ahmedgamil.wakili.core.designsystem.component.WakiliBackButton
 import com.ahmedgamil.wakili.core.designsystem.component.WakiliRoundIconButton
 import com.ahmedgamil.wakili.core.designsystem.component.WakiliTextField
 import com.ahmedgamil.wakili.core.designsystem.icon.WakiliIcon
@@ -170,7 +171,7 @@ fun ScheduledTasksScreen(
                 vertical = WakiliDimens.Space10,
             ),
         ) {
-            WakiliRoundIconButton(icon = WakiliIcons.CornerUpLeft, onClick = onBack)
+            WakiliBackButton(onClick = onBack)
             Text(
                 text = stringResource(R.string.sched_title),
                 style = MaterialTheme.typography.titleMedium,

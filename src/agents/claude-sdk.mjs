@@ -231,7 +231,9 @@ export const claudeSdkAgent = {
         entry.q = q;
         for await (const msg of q) {
           if (!entry.alive) break;
-          if (msg.type === "result" && msg.session_id) entry.threadId = msg.session_id; // the thread this query now carries
+          // init announces the thread id up front; `result` never arrives on an
+          // interrupted turn, so init is what keeps the thread resumable then.
+          if (msg.session_id && (msg.type === "result" || (msg.type === "system" && msg.subtype === "init"))) entry.threadId = msg.session_id; // the thread this query now carries
           // Agent-initiated continuation adoption — same rules as the CLI
           // adapter (see claude.mjs): only unambiguous model output opens a
           // turn, and misses are buffered until the gateway can take it.

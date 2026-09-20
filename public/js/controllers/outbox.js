@@ -40,7 +40,7 @@ export function createOutbox({ api, store, emitter, setBusy }) {
       let up = a.up || null;
       if (!up && a.promise) up = await a.promise.catch(() => null); // eager upload still in flight
       if (!up || !up.path) {
-        try { up = await api.upload(a.name, a.dataBase64, id); } catch { up = null; }
+        try { up = await api.upload(a.name, a.file, id); } catch { up = null; }
         if (up && up.path) a.up = up; // remember, so another Retry won't re-upload
       }
       if (!up || !up.path) throw new Error(a.name);

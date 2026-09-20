@@ -3,6 +3,7 @@ package com.ahmedgamil.wakili.core.datastore
 import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -19,7 +20,15 @@ data class Settings(
     val theme: ThemeMode = ThemeMode.SYSTEM,
     val accentHex: String = "", // "" = theme default
     val markdown: Boolean = true,
+    /** Chat transcript body text size in sp — everything in the transcript
+     *  scales with it (see [CHAT_FONT_DEFAULT]). */
+    val chatFontSize: Int = CHAT_FONT_DEFAULT,
 )
+
+/** The design's own body size (Type.kt bodyLarge), i.e. scale 1.0. */
+const val CHAT_FONT_DEFAULT = 15
+const val CHAT_FONT_MIN = 10
+const val CHAT_FONT_MAX = 30
 
 /**
  * App preferences — the DataStore twin of the web client's localStorage keys
@@ -33,6 +42,7 @@ class SettingsStore @Inject constructor(
     private val keyTheme = stringPreferencesKey("theme")
     private val keyAccent = stringPreferencesKey("accent")
     private val keyMarkdown = booleanPreferencesKey("markdown")
+    private val keyChatFontSize = intPreferencesKey("chat_font_size")
     private val keyLastAgent = stringPreferencesKey("last_agent")
     private val keyLastControls = stringPreferencesKey("last_controls_json")
     private val keyPermMode = stringPreferencesKey("perm_mode")
@@ -42,6 +52,7 @@ class SettingsStore @Inject constructor(
             theme = runCatching { ThemeMode.valueOf(p[keyTheme] ?: "SYSTEM") }.getOrDefault(ThemeMode.SYSTEM),
             accentHex = p[keyAccent].orEmpty(),
             markdown = p[keyMarkdown] ?: true,
+            chatFontSize = (p[keyChatFontSize] ?: CHAT_FONT_DEFAULT).coerceIn(CHAT_FONT_MIN, CHAT_FONT_MAX),
         )
     }
 
@@ -74,7 +85,7 @@ class SettingsStore @Inject constructor(
 
     private val keyHomeAgent = stringPreferencesKey("home_agent")
 
-    /** The agent tab selected on the home page — new chats use it and the list
+    /** The agent selected on the home page — new chats use it and the list
      *  filters by it (web ra-home-agent). Empty until the user picks one. */
     val homeAgent: Flow<String> = context.settingsStore.data.map { p ->
         p[keyHomeAgent].orEmpty()
@@ -101,6 +112,9 @@ class SettingsStore @Inject constructor(
     suspend fun setTheme(mode: ThemeMode) = edit { it[keyTheme] = mode.name }
     suspend fun setAccent(hex: String) = edit { it[keyAccent] = hex }
     suspend fun setMarkdown(on: Boolean) = edit { it[keyMarkdown] = on }
+    suspend fun setChatFontSize(sp: Int) = edit {
+        it[keyChatFontSize] = sp.coerceIn(CHAT_FONT_MIN, CHAT_FONT_MAX)
+    }
 
     // "Allow always" moved to the gateway (session.autoAllow via PATCH): the
     // server auto-approves, so it works while the app is backgrounded.

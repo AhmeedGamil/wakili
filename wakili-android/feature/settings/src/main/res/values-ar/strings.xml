@@ -13,6 +13,9 @@
     <string name="settings_theme_dark">داكن</string>
     <string name="settings_theme_light">فاتح</string>
     <string name="settings_markdown">تنسيق ماركداون</string>
+    <string name="settings_chat_font_size">حجم خط المحادثة</string>
+    <string name="settings_font_smaller">نص أصغر</string>
+    <string name="settings_font_larger">نص أكبر</string>
     <string name="settings_language">اللغة</string>
     <string name="settings_device">الكمبيوتر</string>
     <string name="settings_lock">قفل الشاشة</string>

@@ -4,6 +4,7 @@
 import { claudeAgent } from "./claude.mjs";
 import { claudeSdkAgent } from "./claude-sdk.mjs";
 import { codexAgent } from "./codex.mjs";
+import { antigravityAgent, antigravityAvailable } from "./antigravity.mjs";
 
 const agents = new Map();
 
@@ -28,3 +29,4 @@ export function listAgents() {
 register(claudeAgent);
 register(claudeSdkAgent);
 register(codexAgent);
+if (antigravityAvailable) register(antigravityAgent); // only where the agy CLI is installed

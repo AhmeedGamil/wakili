@@ -16,8 +16,20 @@ import { createSlashMenu } from "./slashMenu.js";
 import { isImageName } from "./media.js";
 import { IS_NATIVE } from "../core/env.js";
 
+// data: URL -> Blob, so clipboard/IME images travel the same binary upload path
+// as picked files. Done by hand rather than through fetch(): some WebViews
+// refuse fetch() on data: URLs, and this is a handful of lines.
+function blobFromDataUrl(dataUrl) {
+  const [head, body] = String(dataUrl || "").split(",");
+  const type = (/^data:([^;]+)/.exec(head || "") || [])[1] || "application/octet-stream";
+  const bin = atob(body || "");
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type });
+}
+
 export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal, onUpload, onRemoveUpload, onSchedule, onLoadScheduled, onCancelScheduled, commands = [] }) {
-  // [{ name, dataBase64, dataUrl, isImg, status, progress, up, promise }]
+  // [{ name, file, dataUrl, isImg, objectUrl, status, progress, up, promise }]
   // status: "uploading" | "done" | "failed"; up = { path, name, url } once done.
   let pending = [];
   let busy = false; // active session has an in-flight turn (send button becomes Stop)
@@ -125,6 +137,9 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
       const remove = el("button", { class: "att-x", type: "button", "aria-label": "Remove", onClick: () => {
         if (a.status === "uploading" && a._abort) { try { a._abort(); } catch { /* already settled */ } }
         if (a.up && onRemoveUpload) onRemoveUpload(a.up);
+        // Only the removed chip's preview is released — a SENT one keeps its
+        // object URL, because the optimistic bubble is still showing it.
+        if (a.objectUrl && a.dataUrl) URL.revokeObjectURL(a.dataUrl);
         pending.splice(i, 1); renderChips();
       } }, icon("x"));
       const card = el("div", { class: "att-card" + (a.isImg ? " img" : "") });
@@ -274,19 +289,17 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
     manageBd.show();
   }
   sched.addEventListener("click", openManage);
-  // One file (picked or pasted) → pending item: read to base64 (the data URL
-  // doubles as the image preview), then eager-upload while the user types.
+  // One file (picked or pasted) → pending item. The File object itself is the
+  // payload — it is never read into a string, so attaching a 40MB zip costs no
+  // memory here and the upload streams it straight off disk. Images preview
+  // from an object URL for the same reason (a data URL of a big photo is a
+  // multi-megabyte string that lives as long as the chip does).
   const addFile = (file, name) => {
     const isImg = /^image\//.test(file.type) || isImageName(file.name);
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = String(reader.result);
-      const a = { name: name || file.name, dataBase64: dataUrl.split(",")[1], dataUrl, isImg };
-      pending.push(a);
-      startUpload(a); // eager: the transfer runs while the user types
-      renderChips();
-    };
-    reader.readAsDataURL(file);
+    const a = { name: name || file.name, file, dataUrl: isImg ? URL.createObjectURL(file) : "", isImg, objectUrl: isImg };
+    pending.push(a);
+    startUpload(a); // eager: the transfer runs while the user types
+    renderChips();
   };
   const readPicked = (inp) => {
     for (const file of inp.files) addFile(file);
@@ -331,7 +344,9 @@ export function createComposer({ onSend, onStop, onCancelQueued, onOpenTerminal,
   // images and the shell-assisted clipboard paste).
   const addDataUrl = (dataUrl, name) => {
     if (!/^data:image\//.test(dataUrl || "")) return false;
-    const a = { name: name || `pasted-${Date.now()}.png`, dataBase64: dataUrl.split(",")[1], dataUrl, isImg: true };
+    // Already a string in memory (clipboard images are small); turn it into a
+    // Blob so it travels the same binary path as every other attachment.
+    const a = { name: name || `pasted-${Date.now()}.png`, file: blobFromDataUrl(dataUrl), dataUrl, isImg: true };
     pending.push(a);
     startUpload(a);
     renderChips();

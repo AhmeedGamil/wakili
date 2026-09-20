@@ -33,7 +33,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ahmedgamil.wakili.core.designsystem.component.WakiliBareTextField
 import com.ahmedgamil.wakili.core.designsystem.component.WakiliCard
-import com.ahmedgamil.wakili.core.designsystem.component.WakiliRoundIconButton
+import com.ahmedgamil.wakili.core.designsystem.component.WakiliBackButton
 import com.ahmedgamil.wakili.core.designsystem.icon.WakiliIcon
 import com.ahmedgamil.wakili.core.designsystem.icon.WakiliIcons
 import com.ahmedgamil.wakili.core.designsystem.theme.WakiliDimens
@@ -64,7 +64,7 @@ fun TerminalScreen(
             horizontalArrangement = Arrangement.spacedBy(WakiliDimens.Space8),
             modifier = Modifier.padding(horizontal = WakiliDimens.Space12, vertical = WakiliDimens.Space10),
         ) {
-            WakiliRoundIconButton(icon = WakiliIcons.CornerUpLeft, onClick = onBack)
+            WakiliBackButton(onClick = onBack)
             WakiliIcon(WakiliIcons.Terminal, tint = colors.accent)
             Text(
                 text = stringResource(R.string.terminal_title),

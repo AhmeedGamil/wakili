@@ -31,6 +31,7 @@ Three things, identical on every platform:
 | `ANTHROPIC_API_KEY` | for Claude (API billing) | Alternative to the OAuth token. |
 | `CODEX_AUTH_JSON` | for Codex (ChatGPT plan) | The full contents of an `auth.json` from a machine where you ran `codex login` — see below. |
 | `OPENAI_API_KEY` | for Codex (API billing) | Alternative to `CODEX_AUTH_JSON`. |
+| `ANTIGRAVITY_OAUTH_TOKEN` | for Antigravity (optional agent) | The contents of `antigravity-oauth-token` from a machine where you signed in to the Antigravity CLI — see below. |
 | `WAKILI_KEEP_AWAKE` | recommended: `0` | Keep-awake is for physical machines; disable it in a container. |
 
 Defaults already set in the image (override only if you know why): `WAKILI_HOME=/data`,
@@ -85,6 +86,27 @@ To switch accounts later: update `CODEX_AUTH_JSON`, delete `/data/codex/auth.jso
 `rm` in the built-in terminal), and restart — the entrypoint re-seeds from the new value.
 
 Or skip all of this with `OPENAI_API_KEY` (API billing, not a ChatGPT plan).
+
+---
+
+## Agent auth 3 — Antigravity (optional)
+
+The image also carries Google's Antigravity CLI. Its sign-in is a browser flow too, so it
+is seeded the same way as Codex:
+
+1. On any machine with a browser, install the
+   [Antigravity CLI](https://github.com/google-antigravity/antigravity-cli/releases),
+   run it once and sign in.
+2. Copy the contents of the file it saved:
+   - Windows: `C:\Users\<name>\.gemini\antigravity-cli\antigravity-oauth-token`
+   - macOS/Linux: `~/.gemini/antigravity-cli/antigravity-oauth-token`
+3. Set it as the `ANTIGRAVITY_OAUTH_TOKEN` env var on the server.
+
+At boot the entrypoint links `~/.gemini` to `/data/gemini` — Antigravity keeps its sign-in
+and its conversations there, so both survive redeploys — and writes the token once (never
+over an existing file). Without a sign-in the Antigravity tab still shows, but its turns
+fail with a sign-in error. Off a container, the agent appears only on machines where the
+CLI is installed (`~/.antigravity/bin`, or point `WAKILI_AGY_BIN` at the binary).
 
 ---
 

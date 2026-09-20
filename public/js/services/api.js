@@ -44,6 +44,35 @@ async function call(method, url, body, timeout = 15000) {
   return res.status === 204 ? null : res.json().catch(() => null);
 }
 
+// The file's bytes ARE the request body; its name rides in a header, percent-
+// encoded because header values are ASCII-only. The browser streams the Blob
+// from disk, so a 40MB pick costs nothing here — the old shape read the whole
+// file into a base64 string and wrapped THAT in JSON, which on a phone meant
+// several times the file's size in memory before a single byte left.
+//
+// XHR, not fetch: only XHR reports upload progress and can be aborted mid-flight.
+function uploadBinary(name, blob, sessionId, onProgress) {
+  const xhr = new XMLHttpRequest();
+  const promise = new Promise((resolve, reject) => {
+    xhr.open("POST", "/api/upload");
+    xhr.setRequestHeader("x-auth-token", TOKEN);
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    xhr.setRequestHeader("X-File-Name", encodeURIComponent(name || "file"));
+    xhr.setRequestHeader("X-Session-Id", sessionId || "");
+    xhr.timeout = 120000;
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total); };
+    xhr.onload = () => {
+      if (xhr.status === 200) { try { resolve(JSON.parse(xhr.responseText)); } catch { reject(new Error("bad upload response")); } }
+      else reject(new Error(`upload -> ${xhr.status}`));
+    };
+    xhr.onerror = () => reject(new Error("upload failed"));
+    xhr.ontimeout = () => reject(new Error("upload timed out"));
+    xhr.onabort = () => reject(new Error("upload cancelled"));
+    xhr.send(blob);
+  });
+  return { promise, abort: () => { try { xhr.abort(); } catch { /* not started */ } } };
+}
+
 export const api = {
   hasToken: () => !!TOKEN,
   agents: () => call("GET", "/api/agents"),
@@ -110,28 +139,10 @@ export const api = {
   term: (id, command, cwd) => call("POST", `/api/sessions/${id}/term`, { command, cwd }, 90000),
   stop: (id) => call("POST", `/api/sessions/${id}/stop`),
   // Uploads move real bytes over possibly-slow links — the most generous budget.
-  upload: (name, dataBase64, sessionId) => call("POST", "/api/upload", { name, dataBase64, sessionId }, 120000),
-  // Same upload, but with live progress + cancel — XHR because fetch can't
-  // report upload progress. onProgress gets 0..1; abort() cancels the transfer.
-  uploadProgress: (name, dataBase64, sessionId, onProgress) => {
-    const xhr = new XMLHttpRequest();
-    const promise = new Promise((resolve, reject) => {
-      xhr.open("POST", "/api/upload");
-      xhr.setRequestHeader("x-auth-token", TOKEN);
-      xhr.setRequestHeader("Content-Type", "application/json");
-      xhr.timeout = 120000;
-      xhr.upload.onprogress = (e) => { if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total); };
-      xhr.onload = () => {
-        if (xhr.status === 200) { try { resolve(JSON.parse(xhr.responseText)); } catch { reject(new Error("bad upload response")); } }
-        else reject(new Error(`upload -> ${xhr.status}`));
-      };
-      xhr.onerror = () => reject(new Error("upload failed"));
-      xhr.ontimeout = () => reject(new Error("upload timed out"));
-      xhr.onabort = () => reject(new Error("upload cancelled"));
-      xhr.send(JSON.stringify({ name, dataBase64, sessionId }));
-    });
-    return { promise, abort: () => { try { xhr.abort(); } catch { /* not started */ } } };
-  },
+  upload: (name, blob, sessionId) => uploadBinary(name, blob, sessionId).promise,
+  // Same upload, with live progress + cancel. onProgress gets 0..1; abort()
+  // cancels the transfer.
+  uploadProgress: (name, blob, sessionId, onProgress) => uploadBinary(name, blob, sessionId, onProgress),
   deleteUpload: (path) => call("POST", "/api/upload/delete", { path }),
   answerPermission: (id, requestId, decision, tool) =>
     call("POST", `/api/sessions/${id}/permission`, { id: requestId, decision, tool }),

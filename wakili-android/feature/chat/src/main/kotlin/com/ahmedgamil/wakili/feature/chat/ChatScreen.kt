@@ -49,6 +49,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TimePicker
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -79,6 +80,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntRect
 import androidx.compose.ui.unit.IntSize
@@ -90,6 +92,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
 import coil3.compose.AsyncImagePainter
+import com.ahmedgamil.wakili.core.datastore.CHAT_FONT_DEFAULT
 import com.ahmedgamil.wakili.core.designsystem.component.WakiliAnchoredPopup
 import com.ahmedgamil.wakili.core.designsystem.component.WakiliBareTextField
 import com.ahmedgamil.wakili.core.designsystem.component.WakiliButton
@@ -100,7 +103,7 @@ import com.ahmedgamil.wakili.core.designsystem.component.WakiliGhostIconButton
 import com.ahmedgamil.wakili.core.designsystem.component.WakiliMenuItem
 import com.ahmedgamil.wakili.core.designsystem.component.WakiliPillChip
 import com.ahmedgamil.wakili.core.designsystem.component.ConnectionDot
-import com.ahmedgamil.wakili.core.designsystem.component.WakiliRoundIconButton
+import com.ahmedgamil.wakili.core.designsystem.component.WakiliBackButton
 import com.ahmedgamil.wakili.core.designsystem.component.dashedBorder
 import com.ahmedgamil.wakili.core.designsystem.component.wakiliShimmer
 import com.ahmedgamil.wakili.core.designsystem.icon.WakiliIcon
@@ -348,8 +351,8 @@ fun ChatScreen(
     }
 
     val pickFile = rememberLauncherForActivityResult(
-        ActivityResultContracts.GetContent(),
-    ) { uri -> uri?.let(viewModel::attach) }
+        ActivityResultContracts.GetMultipleContents(),
+    ) { uris -> viewModel.attach(uris) }
 
     val visibleContent = remember(
         uiState.messages,
@@ -568,13 +571,21 @@ fun ChatScreen(
     }
 
     val colors = WakiliTheme.colors
+    // Settings → Other → Chat font size. Scaling the transcript's font scale
+    // (not one text style) keeps everything in it proportional: body text,
+    // headings, code blocks, tool cards, thinking. dp — spacing, icons, images —
+    // is untouched, and so is the chrome outside the list.
+    val density = LocalDensity.current
+    val chatDensity = remember(density, uiState.chatFontSize) {
+        Density(density.density, density.fontScale * uiState.chatFontSize / CHAT_FONT_DEFAULT)
+    }
     Column(modifier = modifier.fillMaxSize().imePadding()) {
         Box(Modifier.weight(1f)) {
             when {
                 uiState.loading && contentItemCount == 0 && !uiState.busy -> WakiliLoading()
                 uiState.error -> ErrorPane(onRetry = viewModel::retry)
                 contentItemCount == 0 && !uiState.busy -> EmptyGreeting()
-                else -> LazyColumn(
+                else -> CompositionLocalProvider(LocalDensity provides chatDensity) { LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize().nestedScroll(transcriptGestures),
                     contentPadding = PaddingValues(
@@ -691,7 +702,7 @@ fun ChatScreen(
                             )
                         }
                     }
-                }
+                } }
             }
             // Floating topbar over the list, on a soft top gradient (web #topbar:
             // solid --bg down to transparent, messages scroll underneath).
@@ -772,13 +783,9 @@ private fun ChatTopBar(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(WakiliDimens.Space10),
         ) {
-            // .icon-btn.round — back to the Home page. Same glyph as the
-            // terminal page's back button (CornerUpLeft) for one consistent back.
-            WakiliRoundIconButton(
-                icon = WakiliIcons.CornerUpLeft,
-                onClick = onBack,
-                contentDescription = null,
-            )
+            // .icon-btn.round — back to the Home page. Same glyph as the web
+            // topbar's back button (chevron-left), used by every page's back.
+            WakiliBackButton(onClick = onBack)
             // The model picker moved to the composer — the topbar keeps only
             // back + the folder chip, so the chat header stays quiet.
             Spacer(Modifier.weight(1f))

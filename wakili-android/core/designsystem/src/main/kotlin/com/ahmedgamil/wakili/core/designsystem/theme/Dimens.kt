@@ -98,7 +98,7 @@ object WakiliDimens {
     val SidebarWidth = 272.dp // --sidebar-w
     val SidebarBrandContentInset = 90.dp // pinned brand (logo row + host row); content starts below it with breathing room
     val SidebarTopFadeHeight = 104.dp // brand overlay below the status bar (covers the two-row brand + the content inset)
-    val SidebarBottomFadeHeight = 48.dp // compact fade above the navigation bar
+    val SidebarBottomFadeHeight = 104.dp // mirrors SidebarTopFadeHeight behind the floating new-session action
     val ComposerPickerGap = 88.dp // controls popover sits this far above the screen bottom (clears the composer)
     val SessionModelMaxWidth = 114.dp // .s-model max-width: 42% of the sidebar
     val ContextMenuWidth = 190.dp // .sess-pop — ONE width for every popover menu

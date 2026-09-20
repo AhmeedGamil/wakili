@@ -21,6 +21,7 @@ import com.ahmedgamil.wakili.core.data.repository.SendResult
 import com.ahmedgamil.wakili.core.data.repository.SessionRepository
 import com.ahmedgamil.wakili.core.data.repository.resolveAgentControls
 import com.ahmedgamil.wakili.core.data.stream.GatewayStreamRepository
+import com.ahmedgamil.wakili.core.datastore.CHAT_FONT_DEFAULT
 import com.ahmedgamil.wakili.core.datastore.SettingsStore
 import com.ahmedgamil.wakili.core.model.AgentManifest
 import com.ahmedgamil.wakili.core.model.ChatMessage
@@ -35,6 +36,7 @@ import com.ahmedgamil.wakili.core.network.dto.ExecBody
 import com.ahmedgamil.wakili.feature.chat.navigation.ChatRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.io.InputStream
 import java.util.UUID
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -46,6 +48,7 @@ import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
@@ -123,6 +126,8 @@ data class ChatUiState(
     val queuedFirst: String = "",
     val error: Boolean = false,
     val markdown: Boolean = true,
+    /** Transcript body text size in sp (Settings → Other). */
+    val chatFontSize: Int = CHAT_FONT_DEFAULT,
     /** "Auto continue" — gateway re-drives a limit-killed turn once quota
      *  returns. On unless the chat has explicitly turned it off. */
     val autoContinue: Boolean = true,
@@ -179,6 +184,17 @@ internal fun List<StoppedMarkerUi>.retirePendingStoppedMarkers(
     } else {
         marker
     }
+}
+
+/** "photo.jpg" -> "photo (2).jpg" when [taken] already holds the name. */
+internal fun uniqueAttachmentName(name: String, taken: Collection<String>): String {
+    if (name !in taken) return name
+    val dot = name.lastIndexOf('.')
+    val stem = if (dot > 0) name.substring(0, dot) else name
+    val ext = if (dot > 0) name.substring(dot) else ""
+    var n = 2
+    while ("$stem ($n)$ext" in taken) n++
+    return "$stem ($n)$ext"
 }
 
 @HiltViewModel
@@ -271,6 +287,7 @@ class ChatViewModel @Inject constructor(
             queuedCount = q.size,
             queuedFirst = q.firstOrNull()?.text.orEmpty(),
             markdown = settings.markdown,
+            chatFontSize = settings.chatFontSize,
             baseUrl = profile?.baseUrl.orEmpty(),
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, ChatUiState())
@@ -835,24 +852,38 @@ class ChatViewModel @Inject constructor(
     private val uploadJobs = mutableMapOf<String, kotlinx.coroutines.Job>()
 
     /** Reads the picked Uri (name, bytes, kind) and starts the upload. */
-    fun attach(uri: android.net.Uri) {
+    fun attach(uri: android.net.Uri) = attach(listOf(uri))
+
+    /** A multi-select pick: describe one at a time so the chips keep the picked
+     *  order. Only name/size is read here — the bytes stream at upload time. */
+    fun attach(uris: List<android.net.Uri>) {
+        if (uris.isEmpty()) return
         viewModelScope.launch {
-            val result = attachmentReader.read(uri) ?: return@launch
-            attach(result.name, result.bytes, result.image, uri)
+            for (uri in uris) {
+                val info = attachmentReader.describe(uri) ?: continue
+                attach(info, uri)
+            }
         }
     }
 
-    private fun attach(name: String, bytes: ByteArray, image: Boolean, uri: android.net.Uri?) {
+    private fun attach(info: AttachmentReader.Info, uri: android.net.Uri) {
+        // Uploads, retries and removals are all keyed by name, and one pick can
+        // now carry several files sharing one ("image.jpg" from two folders).
+        val unique = uniqueAttachmentName(info.name, local.value.attachments.map { it.name })
         local.update {
-            it.copy(attachments = it.attachments + PendingAttachment(name = name, image = image, uri = uri))
+            it.copy(attachments = it.attachments + PendingAttachment(name = unique, image = info.image, uri = uri))
         }
-        launchAttachmentUpload(name, bytes)
+        launchAttachmentUpload(unique, info.size) { attachmentReader.open(uri) }
     }
 
-    private fun launchAttachmentUpload(name: String, bytes: ByteArray) {
+    private fun launchAttachmentUpload(
+        name: String,
+        size: Long,
+        openStream: () -> InputStream,
+    ) {
         uploadJobs[name] = viewModelScope.launch {
             try {
-                val uploaded = fileRepository.upload(name, bytes, sessionId) { progress ->
+                val uploaded = fileRepository.upload(name, size, sessionId, { progress ->
                     local.update { state ->
                         state.copy(
                             attachments = state.attachments.map {
@@ -864,7 +895,7 @@ class ChatViewModel @Inject constructor(
                             },
                         )
                     }
-                }
+                }, openStream)
                 local.update { s ->
                     s.copy(
                         attachments = s.attachments.map {
@@ -877,7 +908,13 @@ class ChatViewModel @Inject constructor(
                     )
                 }
                 persistAttachments()
-            } catch (e: Exception) {
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                // Throwable, not Exception: an upload that dies on an Error —
+                // OutOfMemoryError above all — has to mark the chip failed.
+                // Catching only Exception is what turned a too-big attachment
+                // into an app that vanished mid-pick.
                 local.update { s ->
                     s.copy(
                         attachments = s.attachments.map {
@@ -907,8 +944,8 @@ class ChatViewModel @Inject constructor(
             )
         }
         uploadJobs[attachment.name] = viewModelScope.launch {
-            val result = attachmentReader.read(uri)
-            if (result == null) {
+            val info = attachmentReader.describe(uri)
+            if (info == null) {
                 local.update { state ->
                     state.copy(
                         attachments = state.attachments.map { current ->
@@ -926,7 +963,7 @@ class ChatViewModel @Inject constructor(
             // The source is the same attachment; retain its stable row/name and
             // only replace the upload status as progress arrives.
             try {
-                val uploaded = fileRepository.upload(attachment.name, result.bytes, sessionId) { progress ->
+                val uploaded = fileRepository.upload(attachment.name, info.size, sessionId, { progress ->
                     local.update { state ->
                         state.copy(
                             attachments = state.attachments.map { current ->
@@ -938,7 +975,7 @@ class ChatViewModel @Inject constructor(
                             },
                         )
                     }
-                }
+                }, { attachmentReader.open(uri) })
                 local.update { state ->
                     state.copy(
                         attachments = state.attachments.map { current ->
@@ -956,7 +993,9 @@ class ChatViewModel @Inject constructor(
                     )
                 }
                 persistAttachments()
-            } catch (e: Exception) {
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
                 local.update { state ->
                     state.copy(
                         attachments = state.attachments.map { current ->

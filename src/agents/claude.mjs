@@ -436,7 +436,10 @@ export const claudeAgent = {
         if (!line) continue;
         let evt;
         try { evt = JSON.parse(line); } catch { continue; }
-        if (evt.type === "result" && evt.session_id) entry.threadId = evt.session_id; // the thread this process now carries
+        // The thread id arrives in the init event as well as `result`; an
+        // interrupted turn never reaches `result`, so init is the capture that
+        // keeps the thread resumable after a stop.
+        if (evt.session_id && (evt.type === "result" || (evt.type === "system" && evt.subtype === "init"))) entry.threadId = evt.session_id; // the thread this process now carries
         // Model activity with no turn attached is an agent-initiated
         // continuation: a background task finished and the harness re-invoked
         // the model on its own. Ask the gateway to adopt it as a real turn —

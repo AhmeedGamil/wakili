@@ -24,6 +24,7 @@ import com.ahmedgamil.wakili.core.designsystem.theme.WakiliDimens
  */
 object WakiliIcons {
     val Plus by lazyIcon("plus", "M5 12h14", "M12 5v14")
+    val Minus by lazyIcon("minus", "M5 12h14")
     val ArrowUp by lazyIcon("arrow-up", "m5 12 7-7 7 7", "M12 19V5")
     val ArrowUpRight by lazyIcon("arrow-up-right", "M7 7h10v10", "M7 17 17 7")
     val Square by lazyIcon("square", "M7 5h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z")

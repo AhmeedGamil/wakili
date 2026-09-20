@@ -8,10 +8,10 @@ export function createGuideSteps({ sidebar, picker, appearanceMenu }) {
   return () => [
     {
       before: () => appearanceMenu.close(),
-      target: () => sidebar.el.querySelector(".agent-tabs"),
+      target: () => sidebar.el.querySelector(".agent-picker"),
       optional: true, // hidden when only one agent is registered
       title: "Pick your agent",
-      body: "Choose who you're talking to. The tabs show that agent's chats, and New chat starts with it. A chat keeps its agent — to move a conversation, use “Continue with…” in its model menu.",
+      body: "Choose who you're talking to. The dropdown shows that agent's chats, and New chat starts with it. A chat keeps its agent — to move a conversation, use “Continue with…” in its model menu.",
     },
     {
       target: () => sidebar.el.querySelector(".side-new"),

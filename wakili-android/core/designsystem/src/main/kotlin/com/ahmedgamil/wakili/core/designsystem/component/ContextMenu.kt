@@ -13,7 +13,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -38,6 +45,15 @@ data class WakiliMenuItem(
     val danger: Boolean = false,
     val onClick: () -> Unit,
 )
+
+/**
+ * The ONE anchored menu allowed on screen, as an id. Two fingers can long-press
+ * two rows within the same frame, and every row owns its own `expanded` flag,
+ * so without a single slot both rows open a popup window and the gallery ends
+ * up with two menus. Provided by [WakiliTheme] so the slot is scoped to the app
+ * subtree rather than being process-wide state.
+ */
+internal val LocalOpenAnchoredMenu = compositionLocalOf { mutableStateOf<Any?>(null) }
 
 /**
  * THE dismissal recipe for every anchored popup in the app. Call sites bring a
@@ -78,26 +94,57 @@ fun WakiliAnchoredPopup(
     onDismiss: () -> Unit,
     content: @Composable () -> Unit,
 ) {
+    val openMenu = LocalOpenAnchoredMenu.current
+    val id = remember { Any() }
+    val currentOnDismiss by rememberUpdatedState(onDismiss)
+    // Opening takes the single slot if it is free; leaving composition gives it
+    // back. The claim happens in an effect, not during composition, so the
+    // common case — one menu, no contention — still draws on the first frame.
+    // FIRST hold wins: the finger that got here first keeps its menu, and a
+    // hold that lands in the same frame steps aside rather than yanking the
+    // menu out from under it.
+    var lost by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        if (openMenu.value == null) openMenu.value = id else lost = true
+    }
+    DisposableEffect(Unit) {
+        onDispose { if (openMenu.value === id) openMenu.value = null }
+    }
+    // Another menu owns the slot. Close through the CALLER's onDismiss, not by
+    // merely hiding: the row's own `expanded` flag has to reset, or its next
+    // long press would be a no-op.
+    if (lost) {
+        LaunchedEffect(Unit) { currentOnDismiss() }
+        return
+    }
+    val dismiss = {
+        if (openMenu.value === id) openMenu.value = null
+        currentOnDismiss()
+    }
     // Composed FIRST so it sits BELOW the menu window. Focusable, so it owns
     // back-press; touch-modal, so outside taps stop here instead of at the app.
     Popup(
         popupPositionProvider = FullScreenPositionProvider,
-        onDismissRequest = onDismiss,
+        onDismissRequest = dismiss,
         properties = PopupProperties(focusable = true, dismissOnClickOutside = false),
     ) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .pointerInput(onDismiss) {
-                    detectTapGestures { onDismiss() } // on finger UP, not down
+                .pointerInput(dismiss) {
+                    detectTapGestures { dismiss() } // on finger UP, not down
                 },
         )
     }
     // Non-focusable, so it is NOT touch-modal: taps outside the card fall
-    // through to the shield instead of being eaten here.
+    // through to the shield instead of being eaten here. It gets NO
+    // onDismissRequest, and dismissOnClickOutside stays off: Compose fires that
+    // callback from the WATCH_OUTSIDE_TOUCH event, which arrives on touch-DOWN,
+    // so wiring it up closes the menu the moment a finger LANDS outside instead
+    // of when it lifts. The shield below is what closes this menu, on release.
     Popup(
         popupPositionProvider = positionProvider,
-        properties = PopupProperties(focusable = false),
+        properties = PopupProperties(focusable = false, dismissOnClickOutside = false),
         content = content,
     )
 }

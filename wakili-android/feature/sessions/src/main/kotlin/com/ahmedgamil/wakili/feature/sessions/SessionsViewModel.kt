@@ -68,7 +68,7 @@ data class SessionsUiState(
     val showModel: Boolean = false,
     /** Collapsed project groups, keyed by cwd ("" = default project). */
     val collapsedGroups: Set<String> = emptySet(),
-    /** The agent tab selected on the home page — new chats use it and the list
+    /** The agent selected on the home page — new chats use it and the list
      *  filters to its chats. Falls back to the first agent until one is picked. */
     val homeAgentId: String = "",
     /** Global files-registry size, shown as the badge on the Files entry (web .side-files-count). */
@@ -131,7 +131,9 @@ class SessionsViewModel @Inject constructor(
         // The home tab is the top of the hierarchy: with more than one agent
         // registered, only that agent's chats show. Sessions from before agents
         // were recorded count as Claude's (web tabAgent filter).
-        val agentFilter = state.homeAgentId.ifBlank { state.agents.firstOrNull()?.id ?: "" }
+        val agentFilter = state.homeAgentId
+            .takeIf { selected -> state.agents.any { it.id == selected } }
+            ?: state.agents.firstOrNull()?.id.orEmpty()
         val visible = if (state.agents.size > 1 && agentFilter.isNotBlank()) {
             list.filter { (it.agentId ?: "claude") == agentFilter }
         } else {
@@ -165,7 +167,7 @@ class SessionsViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             runCatching { agentRepository.agents() }.getOrNull()?.let { list ->
-                local.update { it.copy(agents = list) }
+                rememberAgents(list)
             }
         }
         viewModelScope.launch {
@@ -228,12 +230,12 @@ class SessionsViewModel @Inject constructor(
                 if (connected && !last) {
                     refresh(silent = true)
                     // Opened while unreachable, connected later: the one-shot
-                    // loads (agent tabs, host name) ran against a dead link and
-                    // never retried — the home page sat nameless and tabless.
+                    // loads (agent picker, host name) ran against a dead link and
+                    // never retried — the home page sat nameless and incomplete.
                     if (local.value.agents.isEmpty()) {
                         viewModelScope.launch {
                             runCatching { agentRepository.agents() }.getOrNull()?.let { list ->
-                                local.update { it.copy(agents = list) }
+                                rememberAgents(list)
                             }
                         }
                     }
@@ -380,11 +382,21 @@ class SessionsViewModel @Inject constructor(
         }
     }
 
-    /** Switch the home agent tab — persisted; the list re-filters and new chats
+    /** Switch the home agent — persisted; the list re-filters and new chats
      *  are created under it. */
     fun setHomeAgent(id: String) {
         if (id == uiState.value.homeAgentId) return
         viewModelScope.launch { settingsStore.setHomeAgent(id) }
+    }
+
+    /** Restore the last valid selection, or heal a removed/renamed agent to the
+     * first manifest entry and persist that fallback for the next launch. */
+    private suspend fun rememberAgents(list: List<AgentManifest>) {
+        val saved = settingsStore.homeAgent.first()
+        val selected = saved.takeIf { id -> list.any { it.id == id } }
+            ?: list.firstOrNull()?.id.orEmpty()
+        if (selected.isNotEmpty() && selected != saved) settingsStore.setHomeAgent(selected)
+        local.update { it.copy(agents = list, homeAgentId = selected) }
     }
 
     /** Collapse/expand a project group (persisted). cwd null = default project. */

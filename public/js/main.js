@@ -63,7 +63,10 @@ const sidebar = createSidebar({
   onSelect: (id) => { document.body.classList.remove("nav-open"); controller.openSession(id); },
   onDelete: (id) => controller.deleteSession(id),
   onRename: (id, title) => controller.renameSession(id, title),
-  onOpenFiles: () => filesPage.open(),
+  // Open on what we already hold (instant), then refetch — the registry is
+  // event-driven, so the moment you're actually looking at the gallery is the
+  // one moment it must not be a stale snapshot.
+  onOpenFiles: () => { filesPage.open(); controller.refreshFiles(); },
   onOpenSchedule: () => schedulePage.open(),
   onAppearance: () => appearanceMenu.open(),
   onOpenConnect: () => appearanceMenu.openTab("connection"),
@@ -165,7 +168,7 @@ const composer = createComposer({
   onOpenTerminal: () => terminalPage.open(store.get().activeSession?.effectiveCwd || ""),
   // Eager attachment uploads: start on pick (progress ring on the card), undo
   // on remove — the upload belongs to whichever session the file was picked in.
-  onUpload: (a, onProgress) => api.uploadProgress(a.name, a.dataBase64, store.get().activeId || "", onProgress),
+  onUpload: (a, onProgress) => api.uploadProgress(a.name, a.file, store.get().activeId || "", onProgress),
   onRemoveUpload: (up) => controller.removeUpload(up),
 });
 // The model picker sits with the composer now (not the topbar), next to the

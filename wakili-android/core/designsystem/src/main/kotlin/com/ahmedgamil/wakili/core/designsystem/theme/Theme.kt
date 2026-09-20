@@ -7,7 +7,10 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.ReadOnlyComposable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
+import com.ahmedgamil.wakili.core.designsystem.component.LocalOpenAnchoredMenu
 
 /**
  * App theme. Web-parity colors are exposed through [WakiliTheme.colors]
@@ -25,7 +28,13 @@ fun WakiliTheme(
     } else {
         wakiliLightColors(accent ?: LightAccentDefault)
     }
-    CompositionLocalProvider(LocalWakiliColors provides colors) {
+    // One slot for the one anchored menu allowed open at a time, scoped to this
+    // theme subtree (see LocalOpenAnchoredMenu).
+    val openMenu = remember { mutableStateOf<Any?>(null) }
+    CompositionLocalProvider(
+        LocalWakiliColors provides colors,
+        LocalOpenAnchoredMenu provides openMenu,
+    ) {
         MaterialTheme(
             colorScheme = colors.toMaterialScheme(),
             typography = WakiliTypography,

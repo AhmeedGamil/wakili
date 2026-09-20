@@ -670,16 +670,22 @@ private fun Modifier.leftRule(color: Color): Modifier = drawBehind {
     )
 }
 
-// Claude's WebSearch/WebFetch and codex's web_search item all count as web.
-private val WEB_TOOL_RE = Regex("^web_?(search|fetch)", RegexOption.IGNORE_CASE)
+// Claude's WebSearch/WebFetch and codex's web_search item all count as web;
+// Antigravity's search_web/read_url_content join them.
+private val WEB_TOOL_RE = Regex("^web_?(search|fetch)|^(search_web|read_url_content)$", RegexOption.IGNORE_CASE)
+
+// Antigravity's file tools, by family — they keep their own names (the agent
+// reports no contents/diffs, so they can't pose as Read/Edit), but share the icons.
+private val AGY_EDIT_TOOLS = setOf("write_to_file", "replace_file_content", "multi_replace_file_content", "sed_file")
+private val PATTERN_TOOLS = setOf("Grep", "grep_search", "find_by_name")
 
 // Header icon per tool family — same mapping as the web toolCard.js headIcon().
 private fun headIcon(name: String) = when {
     name == "Bash" || name == "PowerShell" -> WakiliIcons.Terminal
-    name in EDIT_TOOLS -> WakiliIcons.Pencil
-    name == "Read" -> WakiliIcons.FileText
-    name == "Grep" -> WakiliIcons.Search
-    name == "Glob" -> WakiliIcons.Folder
+    name in EDIT_TOOLS || name in AGY_EDIT_TOOLS -> WakiliIcons.Pencil
+    name == "Read" || name == "view_file" -> WakiliIcons.FileText
+    name == "Grep" || name == "grep_search" -> WakiliIcons.Search
+    name == "Glob" || name == "find_by_name" || name == "list_dir" -> WakiliIcons.Folder
     name == "Task" || name == "Agent" -> WakiliIcons.Bot
     WEB_TOOL_RE.containsMatchIn(name) -> WakiliIcons.Globe
     else -> WakiliIcons.Wrench
@@ -693,9 +699,9 @@ private fun headLabel(name: String, input: JsonObject?): String {
     if (name == "Bash") return input.str("description")?.let { "Bash · $it" } ?: "Bash"
     // Grep/Glob are about the pattern, not a single file — surface it.
     input.str("pattern")?.let { pattern ->
-        if (name == "Grep") {
+        if (name in PATTERN_TOOLS) {
             val where = input.str("path")?.let { " (in $it)" }.orEmpty()
-            return "Grep \"$pattern\"$where"
+            return "$name \"$pattern\"$where"
         }
         if (name == "Glob") return "Glob pattern: \"$pattern\""
     }

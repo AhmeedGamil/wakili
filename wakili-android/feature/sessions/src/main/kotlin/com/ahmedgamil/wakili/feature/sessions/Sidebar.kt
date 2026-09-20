@@ -6,8 +6,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -127,6 +125,8 @@ fun SidebarDrawer(
     // No status-bar/nav-bar insets here: the NavHost already wraps this page in
     // safeDrawingPadding, so adding them again double-padded the top.
     val pullToRefreshState = rememberPullToRefreshState()
+    val activeCwd = uiState.rows.firstOrNull { it.session.id == activeSessionId }
+        ?.session?.effectiveCwd
 
     // The WHOLE sidebar is one scrollable list wrapped in pull-to-refresh:
     // dragging down from the top refreshes the session list (there is no
@@ -149,37 +149,23 @@ fun SidebarDrawer(
                     start = WakiliDimens.Space8,
                     top = WakiliDimens.SidebarBrandContentInset,
                     end = WakiliDimens.Space8,
-                    bottom = WakiliDimens.Space8,
+                    bottom = WakiliDimens.SidebarBottomFadeHeight + WakiliDimens.Space16,
                 ),
             ) {
-            // .agent-tabs — the home page's top-level choice: which agent you're
+            // Agent dropdown — the home page's top-level choice: which agent you're
             // talking to. Picks the agent for new chats AND filters the list.
             // Hidden when only one agent is registered. The ITEM always exists
             // (content conditional inside): agents load async, and an item
             // INSERTED above the anchor made the page open "slightly scrolled" —
             // growing in place keeps the top at the top.
-            item(key = "agent-tabs") {
+            item(key = "agent-picker") {
                 if (uiState.agents.size > 1) {
-                    AgentTabs(
+                    AgentDropdown(
                         agents = uiState.agents,
                         selected = uiState.homeAgentId,
                         onSelect = viewModel::setHomeAgent,
                     )
                 }
-            }
-
-            // New chat is the ONE primary action kept out here (Select project /
-            // Files / Settings now live in the brand row's ☰ menu). One tap starts
-            // a chat in the open chat's project (or the default when none is open).
-            item(key = "new") {
-                val activeCwd = uiState.rows.firstOrNull { it.session.id == activeSessionId }
-                    ?.session?.effectiveCwd
-                SideNewChat(
-                    label = stringResource(R.string.sessions_new),
-                    onClick = { viewModel.newChatIn(activeCwd) },
-                    busy = uiState.creating && uiState.creatingCwd == activeCwd,
-                    enabled = !uiState.creating,
-                )
             }
 
             // .sess-head — "Sessions" + grouping filter popover
@@ -279,6 +265,23 @@ fun SidebarDrawer(
                             alpha = WakiliDimens.SidebarTopFadeMidAlpha,
                         ),
                         1f to colors.bg.copy(alpha = 0f),
+                    ),
+                ),
+        )
+        // Mirror the brand fade at the bottom. The floating primary action sits
+        // above this layer while sessions can scroll cleanly beneath both.
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(WakiliDimens.SidebarBottomFadeHeight)
+                .background(
+                    Brush.verticalGradient(
+                        0f to colors.bg.copy(alpha = 0f),
+                        (1f - WakiliDimens.SidebarTopFadeMidStop) to colors.bg.copy(
+                            alpha = WakiliDimens.SidebarTopFadeMidAlpha,
+                        ),
+                        1f to colors.bg,
                     ),
                 ),
         )
@@ -403,6 +406,15 @@ fun SidebarDrawer(
                 )
             }
         }
+        SideNewChat(
+            label = stringResource(R.string.sessions_new),
+            onClick = { viewModel.newChatIn(activeCwd) },
+            busy = uiState.creating && uiState.creatingCwd == activeCwd,
+            enabled = !uiState.creating,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = WakiliDimens.Space16, bottom = WakiliDimens.Space16),
+        )
     }
 
     renaming?.let { session ->
@@ -447,7 +459,7 @@ private fun modelLabel(session: SessionSummary, state: SessionsUiState): String?
 
 /**
  * Home — the app's landing page (the web sidebar-as-page): the app opens here,
- * you pick an agent tab and a chat, and selecting one navigates to it. It IS
+ * you pick an agent and a chat, and selecting one navigates to it. It IS
  * the sidebar content, full-screen; no auto-redirect into a chat.
  */
 @Composable
@@ -473,45 +485,53 @@ fun HomeScreen(
     }
 }
 
-/**
- * .agent-tabs — segmented control at the top of the home page. Which agent you
- * talk to is chosen HERE (it picks the agent for new chats and filters the list
- * below); the chat page has no agent picker. Scrolls horizontally when the
- * labels don't fit, like the web tab row.
- */
+/** Agent dropdown at the top of the home page. It chooses the agent for new
+ * sessions and filters the list; the persisted selection is restored by the
+ * view model on the next launch. */
 @Composable
-private fun AgentTabs(
+private fun AgentDropdown(
     agents: List<AgentManifest>,
     selected: String,
     onSelect: (String) -> Unit,
 ) {
     val colors = WakiliTheme.colors
-    val labelStyle = MaterialTheme.typography.labelLarge
     val active = selected.ifBlank { agents.firstOrNull()?.id.orEmpty() }
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = WakiliDimens.Space6)
-            .clip(RoundedCornerShape(WakiliDimens.RadiusLg))
-            .background(colors.panel2)
-            .horizontalScroll(rememberScrollState())
-            .padding(WakiliDimens.Space3),
-        horizontalArrangement = Arrangement.spacedBy(WakiliDimens.Space4),
-    ) {
-        for (agent in agents) {
-            val on = agent.id == active
+    val current = agents.firstOrNull { it.id == active } ?: agents.first()
+    var open by remember { mutableStateOf(false) }
+    // Sized to its own label, not to the page: it names ONE agent, and a
+    // full-width control reads as a section header for the list under it.
+    Box(modifier = Modifier.padding(vertical = WakiliDimens.Space6)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(WakiliDimens.Space10),
+            modifier = Modifier
+                .clip(RoundedCornerShape(WakiliDimens.RadiusLg))
+                .background(colors.panel2)
+                .border(WakiliDimens.BorderThin, colors.border, RoundedCornerShape(WakiliDimens.RadiusLg))
+                .clickable { open = true }
+                .padding(horizontal = WakiliDimens.Space12, vertical = WakiliDimens.Space11),
+        ) {
+            WakiliIcon(WakiliIcons.Bot, size = WakiliDimens.Icon, tint = colors.muted)
             Text(
-                text = agent.label,
-                style = labelStyle,
-                color = if (on) colors.text else colors.muted,
+                text = current.label,
+                style = MaterialTheme.typography.labelLarge,
+                color = colors.text,
                 maxLines = 1,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(WakiliDimens.RadiusSm))
-                    .background(if (on) colors.panel else Color.Transparent)
-                    .clickable { onSelect(agent.id) }
-                    .padding(horizontal = WakiliDimens.Space14, vertical = WakiliDimens.Space9),
+                overflow = TextOverflow.Ellipsis,
             )
+            WakiliIcon(WakiliIcons.ChevronDown, size = WakiliDimens.IconSm, tint = colors.muted)
         }
+        WakiliContextMenu(
+            expanded = open,
+            onDismiss = { open = false },
+            items = agents.map { agent ->
+                WakiliMenuItem(
+                    label = agent.label,
+                    icon = if (agent.id == active) WakiliIcons.Check else WakiliIcons.Bot,
+                    onClick = { onSelect(agent.id) },
+                )
+            },
+        )
     }
 }
 
@@ -570,10 +590,10 @@ private fun SideEntry(
 }
 
 /**
- * .side-new-solo — the one PRIMARY action in the sidebar, sitting directly under
- * the agent tabs. Unlike the plain chrome rows around it, this reads accent (the
- * web's `color-mix(accent 14%)` wash behind accent text and icon), so the theme's
- * chosen accent is what marks it as the thing to tap.
+ * Floating bottom-end primary action, shaped as a full pill (like the composer
+ * bar, not like the square-ish list rows it floats over). Its solid fill is the
+ * selected theme accent, and the mirrored bottom fade keeps scrolling rows
+ * legible behind it.
  */
 @Composable
 private fun SideNewChat(
@@ -584,16 +604,15 @@ private fun SideNewChat(
     // control that was actually tapped.
     busy: Boolean = false,
     enabled: Boolean = true,
+    modifier: Modifier = Modifier,
 ) {
     val colors = WakiliTheme.colors
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(WakiliDimens.Space9),
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = WakiliDimens.Space2)
-            .clip(RoundedCornerShape(WakiliDimens.RadiusMd))
-            .background(colors.accent.copy(alpha = WakiliDimens.AlphaAccentWash))
+        modifier = modifier
+            .clip(CircleShape)
+            .background(colors.accent, CircleShape)
             .clickable(enabled = enabled && !busy, onClick = onClick)
             .padding(horizontal = WakiliDimens.Space12, vertical = WakiliDimens.Space12)
             .alpha(if (enabled || busy) 1f else WakiliDimens.AlphaDisabled),
@@ -601,18 +620,17 @@ private fun SideNewChat(
         if (busy) {
             CircularProgressIndicator(
                 modifier = Modifier.size(WakiliDimens.IconLg),
-                color = colors.accent,
+                color = colors.accentInk,
                 strokeWidth = WakiliDimens.BorderThick,
             )
         } else {
-            WakiliIcon(WakiliIcons.Plus, size = WakiliDimens.IconLg, tint = colors.accent)
+            WakiliIcon(WakiliIcons.Plus, size = WakiliDimens.IconLg, tint = colors.accentInk)
         }
         Text(
             text = label,
             style = ChromeRowTextStyle,
             fontWeight = FontWeight.SemiBold,
-            color = colors.accent,
-            modifier = Modifier.weight(1f),
+            color = colors.accentInk,
         )
     }
 }
