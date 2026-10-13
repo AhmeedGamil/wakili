@@ -31,9 +31,12 @@ COPY . .
 # dash rejects the resulting `set -e\r`, so strip CR before the shim ever runs.
 RUN sed -i 's/\r$//' docker-entrypoint.sh
 
+# Containers run as root, and Claude Code refuses bypassPermissions ("Auto
+# mode") as root unless told it is sandboxed — every Auto-mode turn would die.
 ENV WAKILI_HOME=/data \
     CLAUDE_CONFIG_DIR=/data/claude-config \
-    CODEX_HOME=/data/codex
+    CODEX_HOME=/data/codex \
+    IS_SANDBOX=1
 
 EXPOSE 8730
 CMD ["sh", "docker-entrypoint.sh"]

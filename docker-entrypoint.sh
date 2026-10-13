@@ -5,6 +5,16 @@
 # codex refreshes and rewrites auth.json itself, and a stale env value must not
 # clobber newer tokens (delete the file on the volume to force a re-seed).
 set -e
+
+# Only the volume is real storage: Railway kills a container whose ephemeral
+# layer passes its file-count limit, and agent turns create lots of files
+# (clones, node_modules, npm/pip caches, temp files). So home, temp and the
+# default working directory for sessions all live on the volume.
+DATA="${WAKILI_HOME:-/data}"
+export HOME="$DATA/home" TMPDIR="$DATA/tmp"
+rm -rf "$TMPDIR"
+mkdir -p "$HOME" "$TMPDIR" "$DATA/workspace"
+
 CODEX_HOME="${CODEX_HOME:-/data/codex}"
 mkdir -p "$CODEX_HOME"
 if [ -n "$CODEX_AUTH_JSON" ] && [ ! -f "$CODEX_HOME/auth.json" ]; then
@@ -26,4 +36,5 @@ if [ -n "$ANTIGRAVITY_OAUTH_TOKEN" ] && [ ! -f "$AGY_TOKEN_FILE" ]; then
   printf '%s' "$ANTIGRAVITY_OAUTH_TOKEN" > "$AGY_TOKEN_FILE"
   chmod 600 "$AGY_TOKEN_FILE"
 fi
-exec node server.mjs --tunnel none
+cd "$DATA/workspace"
+exec node /app/server.mjs --tunnel none
