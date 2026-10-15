@@ -12,8 +12,8 @@ android {
 
     defaultConfig {
         applicationId = "com.ahmedgamil.wakili"
-        versionCode = 4
-        versionName = "0.4.0"
+        versionCode = 5
+        versionName = "0.5.0"
     }
 
     // Real release signing when <repo>/keystore.properties exists (see
