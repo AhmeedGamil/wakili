@@ -31,6 +31,9 @@ function titleFromSlug(slug) {
   return String(slug).split("-").map((p) => (/^gpt$/i.test(p) ? "GPT" : p.charAt(0).toUpperCase() + p.slice(1))).join("-");
 }
 
+// Models whose catalog entry lists the `ultra` effort level (see effortCeiling).
+let ultraModels = new Set();
+
 function loadCodexModels() {
   try {
     const data = JSON.parse(fs.readFileSync(CODEX_MODELS_CACHE, "utf8"));
@@ -38,22 +41,31 @@ function loadCodexModels() {
       .filter((m) => m && m.slug && m.visibility === "list")
       .sort((a, b) => (a.priority ?? 999) - (b.priority ?? 999));
     const opts = models.map((m) => ({ value: m.slug, label: m.display_name || titleFromSlug(m.slug) }));
-    return opts.length ? opts : null;
+    if (!opts.length) return null;
+    ultraModels = new Set(models
+      .filter((m) => (m.supported_reasoning_levels || []).some((l) => (l && l.effort || l) === "ultra"))
+      .map((m) => m.slug));
+    return opts;
   } catch { return null; }
 }
 
-let CODEX_MODELS = loadCodexModels() || FALLBACK_MODELS;
-let modelsFromCache = CODEX_MODELS !== FALLBACK_MODELS;
+function cacheMtime() {
+  try { return fs.statSync(CODEX_MODELS_CACHE).mtimeMs; } catch { return 0; }
+}
 
-// Called on every manifest request (see registry.listAgents): once the cache
-// file shows up — codex writes it on its first run, which on a fresh volume is
-// after the gateway booted — swap the fallback for the real list in place, so
-// the picker updates without a server restart.
+let loadedMtime = cacheMtime();
+let CODEX_MODELS = loadCodexModels() || FALLBACK_MODELS;
+
+// Called on every manifest request (see registry.listAgents): whenever codex
+// rewrites the cache — its first run on a fresh volume, or a revalidation that
+// brings in a newly released model — swap the new list in place, so the picker
+// updates without a server restart. A stat per request; re-parse only on change.
 function refreshModels() {
-  if (modelsFromCache) return;
+  const mtime = cacheMtime();
+  if (!mtime || mtime === loadedMtime) return;
   const loaded = loadCodexModels();
-  if (!loaded) return;
-  modelsFromCache = true;
+  if (!loaded) return; // mid-write or unreadable: retry on the next request
+  loadedMtime = mtime;
   CODEX_MODELS = loaded;
   codexAgent.controls.model.options = loaded;
   codexAgent.controls.model.default = loaded[0].value;
@@ -61,8 +73,9 @@ function refreshModels() {
 }
 
 // --- Reasoning effort ----------------------------------------------------------
-// Matches the Codex app's picker: every model takes low..xhigh, and the top-tier
-// 5.6 models (Sol, Terra) additionally take `ultra` (multi-agent orchestration).
+// Matches the Codex app's picker: every model takes low..xhigh, and models whose
+// catalog entry lists `ultra` (multi-agent orchestration — Sol, Terra, Astra)
+// additionally take it.
 // The catalog file also advertises a `max` level, but the app doesn't offer it —
 // we follow the app. `optionsFor` gives the UI the exact list per model; plain
 // `options` is the union fallback for clients that don't know optionsFor —
@@ -72,7 +85,9 @@ const EFFORT_LADDER = ["low", "medium", "high", "xhigh", "ultra"];
 const EFFORT_LABELS = { low: "Light", medium: "Medium", high: "High", xhigh: "Extra High", ultra: "Ultra" };
 
 function effortCeiling(model) {
-  return /^gpt-5\.6-(sol|terra)/.test(model || "") ? "ultra" : "xhigh";
+  // No catalog loaded (fallback list): only the 5.6 Sol/Terra entries take ultra.
+  const ultra = ultraModels.size ? ultraModels.has(model) : /^gpt-5\.6-(sol|terra)/.test(model || "");
+  return ultra ? "ultra" : "xhigh";
 }
 
 function effortOptions(ceiling) {

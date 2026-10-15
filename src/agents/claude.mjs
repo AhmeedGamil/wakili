@@ -164,10 +164,29 @@ function probeModel(alias) {
 // keep the ALIAS as their value (so runtime always gets the latest); only the
 // label reflects the probed version. The static list below is the fallback if a
 // probe times out or the CLI is unavailable.
+// A failed probe keeps that family's previous label rather than regressing a
+// known version back to "(latest)".
 async function discoverModels() {
   const resolved = await Promise.all(MODEL_FAMILIES.map((f) => probeModel(f.alias)));
-  const opts = MODEL_FAMILIES.map((f, i) => ({ value: f.alias, label: labelForModel(f.family, resolved[i]) }));
+  const prev = new Map(claudeAgent.controls.model.options.map((o) => [o.value, o.label]));
+  const opts = MODEL_FAMILIES.map((f, i) => ({
+    value: f.alias,
+    label: resolved[i] ? labelForModel(f.family, resolved[i]) : (prev.get(f.alias) || labelForModel(f.family, null)),
+  }));
   if (opts.length) claudeAgent.controls.model.options = opts;
+}
+
+// New model releases (e.g. Opus 5 -> 5.5) re-point the aliases without a
+// gateway restart, so re-probe in the background when the manifest is served,
+// at most once per MODEL_REFRESH_MS. The request never waits on the probe; the
+// next manifest fetch picks up the new labels.
+const MODEL_REFRESH_MS = 60 * 60 * 1000;
+let modelsProbedAt = Date.now();
+let modelProbe = null;
+function refreshModels() {
+  if (modelProbe || Date.now() - modelsProbedAt < MODEL_REFRESH_MS) return;
+  modelsProbedAt = Date.now();
+  modelProbe = discoverModels().catch(() => {}).finally(() => { modelProbe = null; });
 }
 
 // Claude adapter. Declares its own native controls (the manifest the UI renders)
@@ -291,6 +310,9 @@ export const claudeAgent = {
 
   // Discovered fresh on each manifest request so newly added custom commands appear.
   commands: listCommands,
+
+  // Called by listAgents() on each manifest request; throttled background re-probe.
+  refresh: refreshModels,
 
   controls: {
     model: {
